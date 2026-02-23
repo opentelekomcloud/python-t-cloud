@@ -16,10 +16,16 @@ dependencies = [
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0,<10",
+    "pytest>=9.0.2,<10",
     "pytest-httpx>=0.36",
-    "ruff>=0.15",
+    "ruff>=0.15.2",
     "mypy>=1.19",
+]
+
+docs = [
+    "sphinx>=8.0",
+    "sphinx-rtd-theme>=3.0",
+    "sphinx-autodoc-typehints>=2.0",
 ]
 
 [tool.hatch.build.targets.wheel]
