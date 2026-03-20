@@ -9,8 +9,8 @@ sys.path.insert(0, os.path.abspath("../src"))
 # -- Project information -----------------------------------------------------
 
 project = "SDK"
-copyright = "2026, Open Telekom Cloud"
-author = "Open Telekom Cloud"
+copyright = "2026, T Cloud"
+author = "T Cloud"
 release = "0.1.0"
 
 # -- General configuration ---------------------------------------------------

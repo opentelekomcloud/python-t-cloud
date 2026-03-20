@@ -149,6 +149,7 @@ class HttpError(SDKError):
         self.url = url
         self.body = body
         self.headers = headers or {}
+        self.request_id: str = self.headers.get("x-request-id", "")
         if status_code is not None:
             self.status_code = status_code
         super().__init__(self._format_message())
