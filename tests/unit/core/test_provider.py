@@ -11,7 +11,7 @@ import pytest
 
 from sdk.core.auth import AuthConfig, AuthMode
 from sdk.core.exceptions import (
-    AuthenticationError,
+    UnauthorizedError,
     BadRequestError,
     EndpointNotFoundError,
     InternalServerError,
@@ -474,7 +474,7 @@ class TestV3Auth:
         http_client = httpx.Client(transport=transport)
 
         client = ProviderClient(cfg, http_client=http_client)
-        with pytest.raises(AuthenticationError):
+        with pytest.raises(UnauthorizedError):
             client.authenticate()
 
 
@@ -687,7 +687,7 @@ class TestRequestRetry:
         client = ProviderClient(cfg, http_client=http_client)
         client.token_id = "tok"
 
-        with pytest.raises(AuthenticationError):
+        with pytest.raises(UnauthorizedError):
             client.request("GET", "https://api.example.com/resource")
 
     def test_401_reauth_failure_raises_reauth_error(self) -> None:

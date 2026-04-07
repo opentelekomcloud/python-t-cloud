@@ -28,7 +28,7 @@ Example::
     cce = ServiceClient(
         provider,
         service_type="ccev2.0",
-        resource_base=endpoint + "api/v3/projects/" + project_id + "/",
+        resource_base=endpoint + "api/v1/projects/" + project_id + "/",
     )
     url = cce.service_url("clusters")
 """
@@ -81,11 +81,12 @@ class ServiceClient:
         endpoint_override: str = "",
         resource_base: str = "",
         extra_headers: dict[str, str] | None = None,
+        microversion: str = "",
     ) -> None:
         self.provider = provider
         self.service_type = service_type
         self.extra_headers: dict[str, str] = extra_headers or {}
-
+        self.microversion = microversion
         # Resolve endpoint
         if endpoint_override:
             self.endpoint = _ensure_trailing_slash(endpoint_override)
@@ -275,6 +276,29 @@ class ServiceClient:
     # Internal
     # ------------------------------------------------------------------
 
+    def _set_microversion_header(self, headers: dict[str, str]) -> None:
+        """Set microversion headers based on service type.
+
+        Corresponds to Go SDK's ``setMicroversionHeader``.
+        """
+        if not self.microversion:
+            return
+
+        mv_header_map = {
+            "compute": "X-OpenStack-Nova-API-Version",
+            "sharev2": "X-OpenStack-Manila-API-Version",
+            "volume": "X-OpenStack-Volume-API-Version",
+        }
+
+        specific = mv_header_map.get(self.service_type)
+        if specific:
+            headers[specific] = self.microversion
+
+        if self.service_type:
+            headers["OpenStack-API-Version"] = (
+                f"{self.service_type} {self.microversion}"
+            )
+
     def _request(
         self,
         method: str,
@@ -302,7 +326,7 @@ class ServiceClient:
         merged: dict[str, str] = {**self.extra_headers}
         if headers:
             merged.update(headers)
-
+        self._set_microversion_header(merged)
         return self.provider.request(
             method,
             url,

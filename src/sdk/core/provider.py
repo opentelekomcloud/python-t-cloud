@@ -36,6 +36,8 @@ Example::
 
 from __future__ import annotations
 
+import logging
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -45,19 +47,19 @@ import httpx
 from sdk.core.auth import AuthConfig, AuthMode
 from sdk.core.endpoint import EndpointLocator, build_endpoint_locator
 from sdk.core.exceptions import (
-    AuthenticationError,
     HttpError,
     ReauthError,
+    UnauthorizedError,
     raise_for_status,
 )
-from sdk.core.log import get_logger, log_request, _redact_headers
 from sdk.core.signer import SignOptions, sign_request
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 USER_AGENT = "python-t-cloud/0.1.0"
 """Default User-Agent header value."""
 
+# Matches Go SDK's defaultOkCodes exactly.
 _DEFAULT_OK_CODES: dict[str, list[int]] = {
     "GET": [200],
     "POST": [200, 201, 202],
@@ -79,6 +81,8 @@ _DEFAULT_RETRY_COUNT = 1
 _DEFAULT_RETRY_TIMEOUT = 0.5
 """Seconds to wait before retrying on gateway errors."""
 
+_VERSION_SUFFIX = re.compile(r"/v\d+(\.\d+)?$")
+
 
 class ProviderClient:
     """Central HTTP client for OTC API interaction.
@@ -87,6 +91,15 @@ class ProviderClient:
     project/domain context, and an endpoint locator built from
     the IAM service catalog. All service clients reference a single
     ``ProviderClient`` instance.
+
+    Corresponds to Go SDK's ``ProviderClient`` struct.
+
+    .. note::
+
+        This implementation is not thread-safe. The Go SDK uses
+        ``sync.RWMutex`` (``UseTokenLock``) for concurrent token
+        access. If thread safety is needed, add external
+        synchronisation around ``authenticate()`` and ``request()``.
 
     Args:
         auth_config: Authentication configuration.
@@ -113,6 +126,7 @@ class ProviderClient:
         backoff_timeout: float = _DEFAULT_BACKOFF_TIMEOUT,
     ) -> None:
         self.auth_config = auth_config
+        self._owns_http_client = http_client is None
         self._http = http_client or httpx.Client(
             headers={"User-Agent": USER_AGENT},
             timeout=httpx.Timeout(30.0),
@@ -140,12 +154,10 @@ class ProviderClient:
     def identity_base(self) -> str:
         """IAM base URL (without version path).
 
-        Strips ``/v3``, ``/v3/``, etc. from the identity endpoint.
+        Strips ``/v3``, ``/v3.0``, etc. from the identity endpoint.
         """
         endpoint = self.auth_config.identity_endpoint.rstrip("/")
-        for suffix in ("/v3", "/v2.0"):
-            if endpoint.endswith(suffix):
-                return endpoint[: -len(suffix)] + "/"
+        endpoint = _VERSION_SUFFIX.sub("", endpoint)
         return endpoint + "/"
 
     @property
@@ -160,7 +172,7 @@ class ProviderClient:
         ``auth_mode`` and presence of ``agency_name``.
 
         Raises:
-            AuthenticationError: If the IAM request fails.
+            UnauthorizedError: If the IAM request fails.
             MissingCredentialsError: If auth mode cannot be determined.
         """
         mode = self.auth_config.auth_mode
@@ -200,6 +212,8 @@ class ProviderClient:
         - 401 → re-authenticate and retry once
         - 429 → backoff retry (up to ``max_backoff_retries``)
         - 502/504 → gateway retry (up to ``retry_count``)
+
+        Corresponds to Go SDK's ``ProviderClient.Request``.
 
         Args:
             method: HTTP method (GET, POST, etc.).
@@ -241,7 +255,8 @@ class ProviderClient:
 
     def close(self) -> None:
         """Close the underlying HTTP client."""
-        self._http.close()
+        if self._owns_http_client:
+            self._http.close()
 
     def __enter__(self) -> ProviderClient:
         return self
@@ -268,110 +283,77 @@ class ProviderClient:
         _is_retry: bool = False,
     ) -> httpx.Response:
         """Core request logic with retry/reauth handling."""
-        req = self._build_request(
-            method=method,
-            url=url,
-            json=json,
-            content=content,
-            headers=headers,
-        )
+        reauthed = _is_retry
 
-        # Inject auth headers
-        prereq_token = self._apply_auth(req)
-
-        # Send
-        t0 = time.monotonic()
-        resp = self._http.send(req)
-        duration_ms = (time.monotonic() - t0) * 1000
-
-        log_request(
-            logger,
-            method=method,
-            url=url,
-            status_code=resp.status_code,
-            duration_ms=duration_ms,
-            request_id=resp.headers.get("x-request-id", ""),
-        )
-
-        # Check status
-        if resp.status_code in ok_codes:
-            return resp
-
-        body = resp.text
-
-        # 401 — reauth and retry once
-        if resp.status_code == 401 and self._reauth_func is not None and not _is_retry:
-            logger.debug("Got 401, attempting re-authentication")
-            try:
-                self._reauth_func()
-            except Exception as exc:
-                raise ReauthError(original=exc) from exc
-            return self._do_request(
+        while True:
+            req = self._build_request(
                 method=method,
                 url=url,
                 json=json,
                 content=content,
                 headers=headers,
-                ok_codes=ok_codes,
-                retry_count=retry_count,
-                retry_timeout=retry_timeout,
-                backoff_remaining=backoff_remaining,
-                _is_retry=True,
             )
 
-        # 429 — backoff retry
-        if resp.status_code == 429 and backoff_remaining > 0:
-            logger.warning(
-                "Rate limited (429), waiting %.1fs (%d retries left)",
-                self.backoff_timeout,
-                backoff_remaining,
-            )
-            time.sleep(self.backoff_timeout)
-            return self._do_request(
-                method=method,
-                url=url,
-                json=json,
-                content=content,
-                headers=headers,
-                ok_codes=ok_codes,
-                retry_count=retry_count,
-                retry_timeout=retry_timeout,
-                backoff_remaining=backoff_remaining - 1,
-                _is_retry=_is_retry,
+            self._apply_auth(req)
+
+            t0 = time.monotonic()
+            resp = self._http.send(req)
+            duration_ms = (time.monotonic() - t0) * 1000
+
+            _log_response(
+                logger, method, url, resp.status_code,
+                duration_ms, resp.headers.get("x-request-id", ""),
             )
 
-        # 502/504 — gateway retry
-        if resp.status_code in (502, 504) and retry_count > 0:
-            logger.warning(
-                "Gateway error (%d), retrying in %.1fs (%d left)",
+            if resp.status_code in ok_codes:
+                return resp
+
+            body = resp.text
+
+            # 401 — reauth and retry once
+            if (resp.status_code == 401
+                    and self._reauth_func is not None
+                    and not reauthed):
+                logger.debug("Got 401, attempting re-authentication")
+                try:
+                    self._reauth_func()
+                except Exception as exc:
+                    raise ReauthError(original=exc) from exc
+                reauthed = True
+                continue
+
+            # 429 — backoff retry
+            if resp.status_code == 429 and backoff_remaining > 0:
+                logger.warning(
+                    "Rate limited (429), waiting %.1fs (%d retries left)",
+                    self.backoff_timeout,
+                    backoff_remaining,
+                )
+                time.sleep(self.backoff_timeout)
+                backoff_remaining -= 1
+                continue
+
+            # 502/504 — gateway retry
+            if resp.status_code in (502, 504) and retry_count > 0:
+                logger.warning(
+                    "Gateway error (%d), retrying in %.1fs (%d left)",
+                    resp.status_code,
+                    retry_timeout,
+                    retry_count,
+                )
+                time.sleep(retry_timeout)
+                retry_count -= 1
+                continue
+
+            # Non-retryable error
+            raise_for_status(
                 resp.status_code,
-                retry_timeout,
-                retry_count,
-            )
-            time.sleep(retry_timeout)
-            return self._do_request(
                 method=method,
                 url=url,
-                json=json,
-                content=content,
-                headers=headers,
-                ok_codes=ok_codes,
-                retry_count=retry_count - 1,
-                retry_timeout=retry_timeout,
-                backoff_remaining=backoff_remaining,
-                _is_retry=_is_retry,
+                body=body,
+                expected=ok_codes,
+                headers=dict(resp.headers),
             )
-
-        # Non-retryable error
-        raise_for_status(
-            resp.status_code,
-            method=method,
-            url=url,
-            body=body,
-            headers=dict(resp.headers),
-        )
-        # raise_for_status always raises, but make mypy happy
-        raise AssertionError("unreachable")  # pragma: no cover
 
     def _build_request(
         self,
@@ -404,7 +386,11 @@ class ProviderClient:
         )
 
     def _apply_auth(self, request: httpx.Request) -> str:
-        """Apply auth headers to a request. Returns pre-request token."""
+        """Apply auth headers to a request.
+
+        Returns the pre-request token for reauth comparison
+        (mirrors Go SDK's ``prereqtok`` pattern).
+        """
         prereq_token = self.token_id
 
         if self.auth_config.auth_mode == AuthMode.AKSK and self.auth_config.access_key:
@@ -412,8 +398,8 @@ class ProviderClient:
             sign_request(
                 request,
                 SignOptions(
-                    access_key=_secret_value(self.auth_config.access_key) if self.auth_config.access_key else "",
-                    secret_key=_secret_value(self.auth_config.secret_key) if self.auth_config.secret_key else "",
+                    access_key=self.auth_config.access_key,
+                    secret_key=_secret_value(self.auth_config.secret_key),
                 ),
             )
             # Set project/domain scope headers
@@ -422,7 +408,9 @@ class ProviderClient:
             if self.domain_id:
                 request.headers["x-domain-id"] = self.domain_id
             if self.auth_config.security_token:
-                request.headers["x-security-token"] = _secret_value(self.auth_config.security_token)
+                request.headers["x-security-token"] = (
+                    self.auth_config.security_token
+                )
         elif self.token_id:
             request.headers["x-auth-token"] = self.token_id
 
@@ -436,7 +424,7 @@ class ProviderClient:
         """Keystone V3 password/token authentication.
 
         POST /v3/auth/tokens → extracts token, project, user, catalog.
-        Sets ``reauth_func`` for automatic token refresh on 401.
+        Sets ``_reauth_func`` for automatic token refresh on 401.
         """
         cfg = self.auth_config
 
@@ -507,14 +495,16 @@ class ProviderClient:
 
         # Resolve project_id from name if needed
         if not cfg.project_id and cfg.project_name:
-            cfg.project_id = self._resolve_project_id(cfg.project_name)
+            self.project_id = self._resolve_project_id(cfg.project_name)
+        else:
+            self.project_id = cfg.project_id or ""
 
         # Resolve domain_id from name if needed
         if not cfg.domain_id and cfg.domain_name:
-            cfg.domain_id = self._resolve_domain_id(cfg.domain_name)
+            self.domain_id = self._resolve_domain_id(cfg.domain_name)
+        else:
+            self.domain_id = cfg.domain_id or ""
 
-        self.project_id = cfg.project_id or ""
-        self.domain_id = cfg.domain_id or ""
         self.region_id = cfg.region or ""
 
         # Fetch service catalog (requests are AK/SK-signed)
@@ -536,7 +526,7 @@ class ProviderClient:
         self._aksk_auth()
 
         if not self.domain_id:
-            raise AuthenticationError(
+            raise UnauthorizedError(
                 method="POST",
                 url=self.identity_v3_endpoint + "auth/tokens",
                 body="Agency auth requires domain_id or domain_name",
@@ -603,14 +593,8 @@ class ProviderClient:
         resp = self._http.send(req)
         duration_ms = (time.monotonic() - t0) * 1000
 
-        log_request(
-            logger,
-            method=method,
-            url=url,
-            status_code=resp.status_code,
-            duration_ms=duration_ms,
-            request_id=resp.headers.get("x-request-id", ""),
-        )
+        _log_response(logger, method, url, resp.status_code,
+                      duration_ms, resp.headers.get("x-request-id", ""))
 
         if resp.status_code >= 400:
             raise_for_status(
@@ -732,12 +716,37 @@ class ProviderClient:
 # ======================================================================
 
 
+def _log_response(
+    log: logging.Logger,
+    method: str,
+    url: str,
+    status_code: int,
+    duration_ms: float,
+    request_id: str,
+) -> None:
+    """Log an HTTP response at the appropriate level.
+
+    - 2xx → DEBUG
+    - 4xx → WARNING
+    - 5xx → ERROR
+    """
+    rid = f" [{request_id}]" if request_id else ""
+    msg = f"{method} {url} → {status_code} ({duration_ms:.0f}ms){rid}"
+
+    if status_code >= 500:
+        log.error(msg)
+    elif status_code >= 400:
+        log.warning(msg)
+    else:
+        log.debug(msg)
+
+
 def _secret_value(value: Any) -> str:
     """Extract the plain string from a value that may be ``SecretStr``.
 
     Works transparently with both ``str`` and ``pydantic.SecretStr``,
-    so ``_build_v3_auth_body`` doesn't depend on which type
-    ``AuthConfig`` uses for sensitive fields.
+    so callers don't need to know which type ``AuthConfig`` uses
+    for sensitive fields.
 
     Args:
         value: A ``str`` or ``SecretStr`` instance.
@@ -745,6 +754,8 @@ def _secret_value(value: Any) -> str:
     Returns:
         Plain string.
     """
+    if value is None:
+        return ""
     if hasattr(value, "get_secret_value"):
         return value.get_secret_value()
     return str(value)
@@ -784,7 +795,9 @@ def _build_v3_auth_body(cfg: AuthConfig) -> dict[str, Any]:
         # MFA TOTP
         if cfg.passcode:
             auth["identity"]["methods"].append("totp")
-            totp_user: dict[str, str] = {"passcode": _secret_value(cfg.passcode)}
+            totp_user: dict[str, str] = {
+                "passcode": _secret_value(cfg.passcode),
+            }
             if cfg.user_id:
                 totp_user["id"] = cfg.user_id
             if cfg.username:
@@ -805,6 +818,8 @@ def _build_v3_auth_body(cfg: AuthConfig) -> dict[str, Any]:
 
 def _build_agency_auth_body(cfg: AuthConfig) -> dict[str, Any]:
     """Build the JSON body for agency ``assume_role`` auth.
+
+    Corresponds to Go SDK's ``AgencyAuthOptions.ToTokenV3CreateMap``.
 
     Args:
         cfg: Auth configuration with agency fields populated.
@@ -836,6 +851,8 @@ def _build_agency_auth_body(cfg: AuthConfig) -> dict[str, Any]:
 
 def _build_scope(cfg: AuthConfig) -> dict[str, Any] | None:
     """Build the ``scope`` section of a V3 auth request.
+
+    Corresponds to Go SDK's ``scopeInfo.BuildTokenV3ScopeMap``.
 
     Args:
         cfg: Auth configuration.

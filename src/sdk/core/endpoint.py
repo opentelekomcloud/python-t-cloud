@@ -22,7 +22,7 @@ Example::
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any
 
@@ -54,10 +54,30 @@ class EndpointOpts:
         availability: Endpoint interface visibility.
     """
 
-    service_type: str
+    service_type: str = ""
     name: str = ""
     region: str = ""
     availability: Availability = Availability.PUBLIC
+
+    def apply_defaults(self, service_type: str) -> EndpointOpts:
+        """Return a copy with defaults applied.
+
+        Corresponds to Go SDK's ``EndpointOpts.ApplyDefaults``.
+        Sets ``service_type`` if not already set and ensures
+        ``availability`` has a value.
+
+        Args:
+            service_type: Default service type to use if none
+                was provided.
+
+        Returns:
+            New ``EndpointOpts`` with defaults filled in.
+        """
+        return replace(
+            self,
+            service_type=self.service_type or service_type,
+            availability=self.availability or Availability.PUBLIC,
+        )
 
 
 def find_endpoint(
@@ -154,12 +174,7 @@ def build_endpoint_locator(
 
     def locator(opts: EndpointOpts) -> str:
         if not opts.region and default_region:
-            opts = EndpointOpts(
-                service_type=opts.service_type,
-                name=opts.name,
-                region=default_region,
-                availability=opts.availability,
-            )
+            opts = replace(opts, region=default_region)
         return find_endpoint(catalog, opts)
 
     return locator

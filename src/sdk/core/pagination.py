@@ -47,7 +47,7 @@ def marker_paginate(
     marker_key: str = "id",
     limit: int = 0,
     params: dict[str, str] | None = None,
-) -> Generator[dict[str, Any], None, None]:
+) -> Generator[dict[str, Any]]:
     """Paginate using marker-based strategy.
 
     Fetches pages by setting ``marker`` query param to the last
@@ -70,6 +70,10 @@ def marker_paginate(
         Individual resource dicts, one at a time.
     """
     query: dict[str, str] = dict(params) if params else {}
+    # NOTE: When limit=0 (server default page size), the only exit
+    # condition is an empty marker. In tests with mocks that always
+    # return data, this will cause an infinite loop — always pass
+    # an explicit limit in test scenarios.
     if limit:
         query["limit"] = str(limit)
 
@@ -93,6 +97,12 @@ def marker_paginate(
         marker = last.get(marker_key, "")
         if not marker:
             return
+
+        # Circuit breaker: if API returns the same marker twice,
+        # we're stuck in a loop — bail out instead of spinning.
+        if query.get("marker") == str(marker):
+            return
+
         query["marker"] = str(marker)
 
 
@@ -104,7 +114,7 @@ def offset_paginate(
     limit: int,
     start_offset: int = 0,
     params: dict[str, str] | None = None,
-) -> Generator[dict[str, Any], None, None]:
+) -> Generator[dict[str, Any]]:
     """Paginate using offset-based strategy.
 
     Increments ``offset`` by ``limit`` on each page. Stops when
@@ -152,7 +162,7 @@ def linked_paginate(
     items_key: str,
     link_path: list[str] | None = None,
     params: dict[str, str] | None = None,
-) -> Generator[dict[str, Any], None, None]:
+) -> Generator[dict[str, Any]]:
     """Paginate using linked (next URL) strategy.
 
     Follows a ``next`` link embedded in the response body.
