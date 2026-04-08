@@ -1,12 +1,5 @@
 """Exception hierarchy for the SDK.
 
-Mirrors the Go SDK error types (``gophertelekomcloud/errors.go``)
-using Python exception inheritance instead of Go's struct embedding.
-
-All exceptions can be imported directly::
-
-    from t_cloud.exceptions import NotFoundError, HttpError
-
 Hierarchy::
 
     SDKError

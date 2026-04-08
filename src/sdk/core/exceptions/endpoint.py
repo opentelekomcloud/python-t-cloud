@@ -1,8 +1,8 @@
 """Endpoint discovery exceptions.
-
-Corresponds to Go SDK's ``ErrServiceNotFound`` and
-``ErrEndpointNotFound``.
 """
+
+# Corresponds to Go SDK's ``ErrServiceNotFound`` and
+# ``ErrEndpointNotFound``.
 
 from __future__ import annotations
 
@@ -16,11 +16,10 @@ class EndpointError(SDKError):
 class ServiceNotFoundError(EndpointError):
     """No matching service found in the service catalog.
 
-    Corresponds to Go SDK's ``ErrServiceNotFound``.
-
     Args:
         service: Name of the service that was not found.
     """
+    # Corresponds to Go SDK's ``ErrServiceNotFound``.
 
     def __init__(self, service: str = "") -> None:
         self.service = service
@@ -36,12 +35,11 @@ class ServiceNotFoundError(EndpointError):
 class EndpointNotFoundError(EndpointError):
     """No matching endpoint found for the service.
 
-    Corresponds to Go SDK's ``ErrEndpointNotFound``.
-
     Args:
         service: Name of the service.
         region: Region where the endpoint was expected.
     """
+    # Corresponds to Go SDK's ``ErrEndpointNotFound``.
 
     def __init__(self, service: str = "", region: str = "") -> None:
         self.service = service

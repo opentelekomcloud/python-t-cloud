@@ -1,13 +1,12 @@
 """Authentication-related exceptions.
-
-Corresponds to Go SDK's ``ErrUnableToReauthenticate`` and
-``ErrErrorAfterReauthentication``.
 """
 
 from __future__ import annotations
 
 from .base import SDKError
 
+# Corresponds to Go SDK's ``ErrUnableToReauthenticate`` and
+# ``ErrErrorAfterReauthentication``.
 
 class AuthError(SDKError):
     """Authentication-related error."""
@@ -24,12 +23,10 @@ class MissingCredentialsError(AuthError):
 class ReauthError(AuthError):
     """Re-authentication failed.
 
-    Corresponds to Go SDK's ``ErrUnableToReauthenticate``.
-
     Args:
         original: The underlying exception that caused the failure.
     """
-
+    # Corresponds to Go SDK's ``ErrUnableToReauthenticate``.
     def __init__(self, original: Exception | None = None) -> None:
         self.original = original
         msg = (
@@ -43,14 +40,13 @@ class ReauthError(AuthError):
 class PostReauthError(AuthError):
     """Request failed after successful re-authentication.
 
-    Corresponds to Go SDK's ``ErrErrorAfterReauthentication``.
     Raised when the token was refreshed successfully, but the
     subsequent request still failed (usually an HTTP error).
 
     Args:
         original: The underlying exception from the failed request.
     """
-
+    # Corresponds to Go SDK's ``ErrErrorAfterReauthentication``.
     def __init__(self, original: Exception | None = None) -> None:
         self.original = original
         msg = (

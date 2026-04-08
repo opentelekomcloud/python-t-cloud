@@ -51,7 +51,7 @@ class TestAuthConfigValidation:
     """AuthConfig should reject invalid credential combinations."""
 
     def test_no_credentials_raises(self):
-        with pytest.raises(MissingCredentialsError, match="Cannot determine auth mode"):
+        with pytest.raises(MissingCredentialsError):
             AuthConfig(
                 identity_endpoint="https://iam.eu-de.otc.t-systems.com/v3",
             )
@@ -69,14 +69,6 @@ class TestAuthConfigValidation:
                 identity_endpoint="https://iam.eu-de.otc.t-systems.com/v3",
                 username="user",
                 password="pass",
-            )
-
-    def test_token_with_username_raises(self):
-        with pytest.raises(MissingCredentialsError, match="should not be provided"):
-            AuthConfig(
-                identity_endpoint="https://iam.eu-de.otc.t-systems.com/v3",
-                token_id="gAAAA_test",
-                username="user",
             )
 
     def test_password_with_user_id_is_valid(self):

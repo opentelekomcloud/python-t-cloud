@@ -1,8 +1,8 @@
 """HTTP response exceptions.
-
-Corresponds to Go SDK's ``ErrUnexpectedResponseCode`` and all
-``ErrDefaultNNN`` types.
 """
+
+# Corresponds to Go SDK's ``ErrUnexpectedResponseCode`` and all
+# ``ErrDefaultNNN`` types.
 
 from __future__ import annotations
 
@@ -14,7 +14,6 @@ from .base import SDKError
 class HttpError(SDKError):
     """HTTP response error.
 
-    Corresponds to Go SDK's ``ErrUnexpectedResponseCode``.
     Stores full request context for debuggability.
 
     Args:
@@ -32,7 +31,7 @@ class HttpError(SDKError):
         request_id: Value of the ``X-Request-Id`` response header,
             extracted automatically for OTC request tracing.
     """
-
+    # Corresponds to Go SDK's ``ErrUnexpectedResponseCode``.
     status_code: int = 0
 
     def __init__(
@@ -70,10 +69,8 @@ class HttpError(SDKError):
 
 class BadRequestError(HttpError):
     """400 Bad Request.
-
-    Corresponds to Go SDK's ``ErrDefault400``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault400``.
     status_code = 400
 
     def _format_message(self) -> str:
@@ -85,10 +82,8 @@ class BadRequestError(HttpError):
 
 class UnauthorizedError(HttpError):
     """401 Unauthorized.
-
-    Corresponds to Go SDK's ``ErrDefault401``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault401``.
     status_code = 401
 
     def _format_message(self) -> str:
@@ -97,9 +92,8 @@ class UnauthorizedError(HttpError):
 
 class ForbiddenError(HttpError):
     """403 Forbidden.
-
-    Corresponds to Go SDK's ``ErrDefault403``.
     """
+    # Corresponds to Go SDK's ``ErrDefault403``.
 
     status_code = 403
 
@@ -109,10 +103,8 @@ class ForbiddenError(HttpError):
 
 class NotFoundError(HttpError):
     """404 Not Found.
-
-    Corresponds to Go SDK's ``ErrDefault404``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault404``.
     status_code = 404
 
     def _format_message(self) -> str:
@@ -124,10 +116,8 @@ class NotFoundError(HttpError):
 
 class MethodNotAllowedError(HttpError):
     """405 Method Not Allowed.
-
-    Corresponds to Go SDK's ``ErrDefault405``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault405``.
     status_code = 405
 
     def _format_message(self) -> str:
@@ -136,10 +126,8 @@ class MethodNotAllowedError(HttpError):
 
 class RequestTimeoutError(HttpError):
     """408 Request Timeout.
-
-    Corresponds to Go SDK's ``ErrDefault408``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault408``.
     status_code = 408
 
     def _format_message(self) -> str:
@@ -148,20 +136,16 @@ class RequestTimeoutError(HttpError):
 
 class ConflictError(HttpError):
     """409 Conflict.
-
-    Corresponds to Go SDK's ``ErrDefault409``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault409``.
     status_code = 409
 
 
 class TooManyRequestsError(HttpError):
     """429 Too Many Requests.
-
-    Corresponds to Go SDK's ``ErrDefault429``.
     Checks ``Retry-After`` response header when present.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault429``.
     status_code = 429
 
     def _format_message(self) -> str:
@@ -178,10 +162,8 @@ class TooManyRequestsError(HttpError):
 
 class InternalServerError(HttpError):
     """500 Internal Server Error.
-
-    Corresponds to Go SDK's ``ErrDefault500``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault500``.
     status_code = 500
 
     def _format_message(self) -> str:
@@ -190,10 +172,8 @@ class InternalServerError(HttpError):
 
 class ServiceUnavailableError(HttpError):
     """503 Service Unavailable.
-
-    Corresponds to Go SDK's ``ErrDefault503``.
     """
-
+    # Corresponds to Go SDK's ``ErrDefault503``.
     status_code = 503
 
     def _format_message(self) -> str:
