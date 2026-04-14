@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from typing import Any
-
 import httpx
 import pytest
 
@@ -14,7 +13,7 @@ from sdk.core.exceptions import (
     NotFoundError,
     ServiceNotFoundError,
 )
-from sdk.core.endpoint import build_endpoint_locator
+from sdk.core.endpoint import build_endpoint_locator, CatalogEntry
 from sdk.core.provider import ProviderClient
 from sdk.core.service_client import ServiceClient, _ensure_trailing_slash
 
@@ -24,8 +23,8 @@ from sdk.core.service_client import ServiceClient, _ensure_trailing_slash
 # ======================================================================
 
 
-def _sample_catalog() -> list[dict[str, Any]]:
-    return [
+def _sample_catalog() -> list[CatalogEntry]:
+    raw = [
         {
             "type": "compute",
             "endpoints": [
@@ -62,12 +61,13 @@ def _sample_catalog() -> list[dict[str, Any]]:
             ],
         },
     ]
+    return [CatalogEntry.model_validate(entry) for entry in raw]
 
 
 def _make_provider(
     handler: Any = None,
     *,
-    catalog: list[dict[str, Any]] | None = None,
+    catalog: list[CatalogEntry] | None = None,
 ) -> ProviderClient:
     """Create an authenticated ProviderClient with mock transport."""
     if handler is None:
@@ -154,7 +154,7 @@ class TestServiceClientConstruction:
             ServiceClient(provider, "nonexistent_service")
 
     def test_endpoint_not_found_wrong_region(self) -> None:
-        catalog = [
+        raw = [
             {
                 "type": "compute",
                 "endpoints": [
@@ -166,6 +166,7 @@ class TestServiceClientConstruction:
                 ],
             },
         ]
+        catalog = [CatalogEntry.model_validate(entry) for entry in raw]
         provider = _make_provider(catalog=catalog)
         with pytest.raises(EndpointNotFoundError):
             ServiceClient(provider, "compute", region="us-east-1")

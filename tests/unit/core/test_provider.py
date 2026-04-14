@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 from unittest.mock import patch
-
+from pydantic import BaseModel
 import httpx
 import pytest
 
@@ -18,7 +18,6 @@ from sdk.core.exceptions import (
     NotFoundError,
     ReauthError,
     ServiceNotFoundError,
-    ServiceUnavailableError,
     TooManyRequestsError,
 )
 from sdk.core.provider import (
@@ -27,7 +26,7 @@ from sdk.core.provider import (
     _build_scope,
     _build_v3_auth_body,
 )
-from sdk.core.endpoint import build_endpoint_locator
+from sdk.core.endpoint import build_endpoint_locator, CatalogEntry
 
 
 # ======================================================================
@@ -85,10 +84,15 @@ def _token_response(
             },
         },
     }
-    if catalog is not None:
-        body["token"]["catalog"] = catalog
-    else:
-        body["token"]["catalog"] = _sample_catalog()
+    raw_catalog = catalog if catalog is not None else _sample_catalog()
+    serialized_catalog = []
+    for entry in raw_catalog:
+        if isinstance(entry, BaseModel):
+            serialized_catalog.append(entry.model_dump(by_alias=True))
+        else:
+            serialized_catalog.append(entry)
+
+    body["token"]["catalog"] = serialized_catalog
 
     resp = httpx.Response(
         201,
@@ -98,8 +102,8 @@ def _token_response(
     return resp
 
 
-def _sample_catalog() -> list[dict[str, Any]]:
-    return [
+def _sample_catalog() -> list[CatalogEntry]:
+    raw = [
         {
             "type": "compute",
             "endpoints": [
@@ -126,10 +130,15 @@ def _sample_catalog() -> list[dict[str, Any]]:
             ],
         },
     ]
+    return [CatalogEntry.model_validate(raw) for raw in raw]
 
 
 def _catalog_response() -> httpx.Response:
-    return httpx.Response(200, json={"catalog": _sample_catalog()})
+    serialized_catalog = [
+        entry.model_dump(by_alias=True)
+        for entry in _sample_catalog()
+    ]
+    return httpx.Response(200, json={"catalog": serialized_catalog})
 
 
 # ======================================================================
@@ -309,7 +318,7 @@ class TestBuildScope:
         }
 
     def test_domain_only(self) -> None:
-        cfg = _password_config(tenant_name=None, domain_id="did-1")
+        cfg = _password_config(tenant_name=None, domain_name=None, domain_id="did-1")
         scope = _build_scope(cfg)
         assert scope == {"domain": {"id": "did-1"}}
 
@@ -347,7 +356,7 @@ class TestEndpointLocator:
 
     def test_region_override(self) -> None:
         from sdk.core.endpoint import EndpointOpts
-        catalog = [
+        raw = [
             {
                 "type": "compute",
                 "endpoints": [
@@ -359,6 +368,7 @@ class TestEndpointLocator:
                 ],
             },
         ]
+        catalog = [CatalogEntry.model_validate(entry) for entry in raw]
         locator = build_endpoint_locator(catalog, "eu-de")
 
         url = locator(EndpointOpts(service_type="compute", region="eu-nl"))
@@ -436,12 +446,16 @@ class TestV3Auth:
 
         def handler(req: httpx.Request) -> httpx.Response:
             captured.append(req)
+            serialized_catalog = [
+                entry.model_dump(by_alias=True)
+                for entry in _sample_catalog()
+            ]
             return httpx.Response(
                 200,
                 json={
                     "token": {
                         "user": {"id": "u-1", "domain": {"id": "d-1"}},
-                        "catalog": _sample_catalog(),
+                        "catalog": serialized_catalog,
                     },
                 },
                 headers={"x-subject-token": "existing-tok"},

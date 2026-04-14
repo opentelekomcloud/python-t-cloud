@@ -1,8 +1,6 @@
 """Endpoint discovery from the IAM service catalog.
 
-Mirrors the Go SDK's ``EndpointOpts``, ``EndpointLocator`` type,
-and ``V3EndpointURL`` function. Extracts the endpoint lookup logic
-into a reusable module.
+Extracts the endpoint lookup logic into a reusable module.
 
 The ``EndpointOpts`` dataclass specifies search criteria, and
 ``find_endpoint()`` searches a service catalog for a matching URL.
@@ -22,17 +20,15 @@ Example::
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Any
+
+from pydantic import BaseModel, Field, AliasChoices
 
 from sdk.core.exceptions import EndpointNotFoundError, ServiceNotFoundError
 
 
 class Availability(StrEnum):
     """Endpoint visibility level.
-
-    Mirrors Go SDK's ``Availability`` constants.
     """
 
     PUBLIC = "public"
@@ -40,12 +36,9 @@ class Availability(StrEnum):
     ADMIN = "admin"
 
 
-@dataclass(frozen=True)
-class EndpointOpts:
+class EndpointOpts(BaseModel):
     """Search criteria for locating a service endpoint.
-
-    Mirrors Go SDK's ``EndpointOpts`` struct. At minimum,
-    ``service_type`` must be provided.
+    At minimum, ``service_type`` must be provided.
 
     Attributes:
         service_type: Catalog service type (e.g. ``compute``, ``dns``).
@@ -53,35 +46,30 @@ class EndpointOpts:
         region: Region to match. Empty means accept any region.
         availability: Endpoint interface visibility.
     """
+    model_config = {"frozen": True}
 
-    service_type: str = ""
+    service_type: str
     name: str = ""
     region: str = ""
     availability: Availability = Availability.PUBLIC
 
-    def apply_defaults(self, service_type: str) -> EndpointOpts:
-        """Return a copy with defaults applied.
 
-        Corresponds to Go SDK's ``EndpointOpts.ApplyDefaults``.
-        Sets ``service_type`` if not already set and ensures
-        ``availability`` has a value.
+class CatalogEndpoint(BaseModel):
+    interface: str
+    region_id: str = Field(default="",
+                           validation_alias=AliasChoices("region_id", "region")
+                           )
+    url: str
 
-        Args:
-            service_type: Default service type to use if none
-                was provided.
 
-        Returns:
-            New ``EndpointOpts`` with defaults filled in.
-        """
-        return replace(
-            self,
-            service_type=self.service_type or service_type,
-            availability=self.availability or Availability.PUBLIC,
-        )
+class CatalogEntry(BaseModel):
+    type: str
+    name: str = ""
+    endpoints: list[CatalogEndpoint] = Field(default_factory=list)
 
 
 def find_endpoint(
-    catalog: list[dict[str, Any]],
+    catalog: list[CatalogEntry],
     opts: EndpointOpts,
 ) -> str:
     """Find a single endpoint URL from the service catalog.
@@ -108,34 +96,30 @@ def find_endpoint(
     service_found = False
 
     for entry in catalog:
-        entry_type = entry.get("type", "")
-        entry_name = entry.get("name", "")
-
-        if entry_type != opts.service_type:
+        if entry.type != opts.service_type:
             continue
-        if opts.name and entry_name != opts.name:
+        if opts.name and entry.name != opts.name:
             continue
 
         service_found = True
 
-        for ep in entry.get("endpoints", []):
-            ep_interface = ep.get("interface", "")
-            if ep_interface != opts.availability:
+        for ep in entry.endpoints:
+            if ep.interface != opts.availability:
                 continue
 
-            ep_region = ep.get("region_id", "") or ep.get("region", "")
-            url = _normalize_url(ep.get("url", ""))
+            if not ep.url:
+                continue
 
-            if not opts.region or ep_region == opts.region:
+            url = _normalize_url(ep.url)
+
+            if not opts.region or ep.region_id == opts.region:
                 matched.append(url)
-            elif ep_region == "*":
+            elif ep.region_id == "*":
                 wildcard.append(url)
 
-    # Fall back to wildcard endpoints
     if not matched:
         matched = wildcard
 
-    # Use first match (matches Go SDK behavior)
     if matched:
         return matched[0]
 
@@ -152,7 +136,7 @@ EndpointLocator = Callable[[EndpointOpts], str]
 
 
 def build_endpoint_locator(
-    catalog: list[dict[str, Any]],
+    catalog: list[CatalogEntry],
     default_region: str = "",
 ) -> EndpointLocator:
     """Build an endpoint locator closure from a service catalog.
@@ -174,7 +158,7 @@ def build_endpoint_locator(
 
     def locator(opts: EndpointOpts) -> str:
         if not opts.region and default_region:
-            opts = replace(opts, region=default_region)
+            opts = opts.model_copy(update={"region": default_region})
         return find_endpoint(catalog, opts)
 
     return locator

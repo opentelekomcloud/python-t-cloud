@@ -1,6 +1,7 @@
 """Tests for ``sdk.core.endpoint``."""
 
 from __future__ import annotations
+from pydantic import ValidationError
 
 from typing import Any
 
@@ -12,6 +13,7 @@ from sdk.core.endpoint import (
     build_endpoint_locator,
     find_endpoint,
     _normalize_url,
+    CatalogEntry
 )
 from sdk.core.exceptions import EndpointNotFoundError, ServiceNotFoundError
 
@@ -21,28 +23,17 @@ from sdk.core.exceptions import EndpointNotFoundError, ServiceNotFoundError
 # ======================================================================
 
 
-def _sample_catalog() -> list[dict[str, Any]]:
-    return [
+def _sample_catalog() -> list[CatalogEntry]:
+    raw_catalog = [
         {
             "type": "compute",
             "name": "nova",
             "endpoints": [
-                {
-                    "interface": "public",
-                    "region_id": "eu-de",
-                    "url": "https://ecs.eu-de.otc.t-systems.com/v2.1",
-                },
-                {
-                    "interface": "internal",
-                    "region_id": "eu-de",
-                    "url": "https://ecs-internal.eu-de.otc.t-systems.com/v2.1",
-                },
-                {
-                    "interface": "public",
-                    "region_id": "eu-nl",
-                    "url": "https://ecs.eu-nl.otc.t-systems.com/v2.1",
-                },
-            ],
+                {"interface": "public", "region_id": "eu-de", "url": "https://ecs.eu-de.otc.t-systems.com/v2.1"},
+                {"interface": "internal", "region_id": "eu-de",
+                 "url": "https://ecs-internal.eu-de.otc.t-systems.com/v2.1"},
+                {"interface": "public", "region_id": "eu-nl", "url": "https://ecs.eu-nl.otc.t-systems.com/v2.1"}
+            ]
         },
         {
             "type": "dns",
@@ -59,19 +50,12 @@ def _sample_catalog() -> list[dict[str, Any]]:
             "type": "identity",
             "name": "keystone",
             "endpoints": [
-                {
-                    "interface": "public",
-                    "region_id": "*",
-                    "url": "https://iam.otc.t-systems.com/v3",
-                },
-                {
-                    "interface": "admin",
-                    "region_id": "*",
-                    "url": "https://iam-admin.otc.t-systems.com/v3",
-                },
-            ],
+                {"interface": "public", "region_id": "eu-de", "url": "https://iam.eu-de.otc.t-systems.com/v3"},
+                {"interface": "admin", "region_id": "*", "url": "https://iam-admin.otc.t-systems.com/v3"}
+            ]
         },
     ]
+    return [CatalogEntry.model_validate(entry) for entry in raw_catalog]
 
 
 # ======================================================================
@@ -105,7 +89,7 @@ class TestEndpointOpts:
 
     def test_frozen(self) -> None:
         opts = EndpointOpts(service_type="compute")
-        with pytest.raises(AttributeError):
+        with pytest.raises(ValidationError):
             opts.region = "eu-de"  # type: ignore[misc]
 
     def test_all_fields(self) -> None:
@@ -161,7 +145,7 @@ class TestFindEndpoint:
         catalog = _sample_catalog()
         opts = EndpointOpts(service_type="identity", region="eu-de")
         url = find_endpoint(catalog, opts)
-        assert url == "https://iam.otc.t-systems.com/v3/"
+        assert url == "https://iam.eu-de.otc.t-systems.com/v3/"
 
     def test_wildcard_admin(self) -> None:
         catalog = _sample_catalog()
@@ -238,8 +222,9 @@ class TestFindEndpoint:
                 ],
             },
         ]
+        cat = [CatalogEntry.model_validate(catalog) for catalog in catalog]
         opts = EndpointOpts(service_type="object-store", region="eu-de")
-        url = find_endpoint(catalog, opts)
+        url = find_endpoint(cat, opts)
         assert url == "https://obs.eu-de.example.com/"
 
 

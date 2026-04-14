@@ -1,7 +1,7 @@
 """AK/SK request signing.
 
-Port of the Go SDK ``signer_helper.go``. Signs HTTP requests using
-the AK/SK authentication scheme compatible with OTC services.
+Signs HTTP requests using the AK/SK authentication scheme compatible
+with services.
 
 The signing process follows these steps:
 
@@ -33,35 +33,41 @@ from __future__ import annotations
 import hashlib
 import hmac
 import re
+import logging
 import threading
 from collections import OrderedDict
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 
 import httpx
+from pydantic import BaseModel, ConfigDict, computed_field, SecretStr
 
-# Supported signing algorithms.
+logger = logging.getLogger(__name__)
+
 SIGN_ALGORITHM_HMAC_SHA256 = "SDK-HMAC-SHA256"
 
 _SUPPORTED_ALGORITHMS = frozenset({
     SIGN_ALGORITHM_HMAC_SHA256,
 })
 
-# The header key for pre-computed content hash.
 _CONTENT_SHA256_HEADER = "x-sdk-content-sha256"
 
 _SPACE_RE = re.compile(r"\s+")
 
+_SIGNED_HEADERS_WHITELIST = frozenset({
+    "host",
+    "content-type",
+    "x-sdk-date",
+    "x-sdk-content-sha256",
+})
 
-# --- Sign key cache (thread-safe, matches Go MemoryCache) ---
+# === 1. TYPES & CACHE ===
 
 
 class _SignKeyCache:
     """Thread-safe LRU-like cache for derived signing keys.
 
-    Corresponds to Go SDK's ``MemoryCache``. Evicts the oldest
-    entry when ``max_count`` is reached.
+    Evicts the oldest entry when ``max_count`` is reached.
 
     Args:
         max_count: Maximum number of cached entries.
@@ -83,29 +89,54 @@ class _SignKeyCache:
             self._store[key] = entry
 
 
-@dataclass(frozen=True)
-class _SignKeyCacheEntry:
+class _SignKeyCacheEntry(BaseModel):
     """Cached signing key with its day-of-epoch stamp.
-
-    Corresponds to Go SDK's ``signKeyCacheEntry``.
     """
-
+    model_config = ConfigDict(frozen=True)
     key: bytes
     days_since_epoch: int
 
 
-# Module-level cache instance (matches Go's ``var cache``).
-_cache = _SignKeyCache(max_count=300)
+class _SignParams(BaseModel):
+    """Resolved signing parameters.
+    """
+
+    access_key: str
+    secret_key: SecretStr
+    region_name: str
+    service_name: str
+    sign_algorithm: str
+    enable_cache_sign_key: bool
+    signing_time: datetime
+
+    @computed_field
+    @property
+    def formatted_date(self) -> str:
+        return _format_date(self.signing_time)
+
+    @computed_field
+    @property
+    def formatted_datetime(self) -> str:
+        return _format_datetime(self.signing_time)
+
+    @property
+    def scope(self) -> str:
+        return (
+            f"{self.formatted_date}/"
+            f"{self.region_name}/"
+            f"{self.service_name}/"
+            f"sdk_request"
+        )
+
+    @property
+    def days_since_epoch(self) -> int:
+        """Number of days since Unix epoch for the signing time."""
+        ts = int(self.signing_time.timestamp())
+        return ts // 86400
 
 
-# --- Sign options ---
-
-
-@dataclass(frozen=True)
-class SignOptions:
+class SignOptions(BaseModel):
     """Options for signing a request.
-
-    Corresponds to Go SDK's ``SignOptions``.
 
     Args:
         access_key: AK/SK access key.
@@ -121,9 +152,10 @@ class SignOptions:
             signing timestamp. Useful when the client clock is
             out of sync with the server.
     """
+    model_config = ConfigDict(frozen=True)
 
     access_key: str
-    secret_key: str
+    secret_key: SecretStr
     region_name: str = ""
     service_name: str = ""
     sign_algorithm: str = SIGN_ALGORITHM_HMAC_SHA256
@@ -131,7 +163,10 @@ class SignOptions:
     time_offset_seconds: int = 0
 
 
-# --- Public API ---
+_cache = _SignKeyCache()
+
+
+# === 2. PUBLIC API ===
 
 
 def sign_request(
@@ -140,9 +175,8 @@ def sign_request(
     *,
     timestamp: datetime | None = None,
 ) -> None:
-    """Sign an httpx request in place with AK/SK credentials.
+    """Sign a httpx request in place with AK/SK credentials.
 
-    Corresponds to Go SDK's ``Sign``.
     Adds ``X-Sdk-Date``, ``Host``, and ``Authorization`` headers.
 
     Args:
@@ -152,9 +186,10 @@ def sign_request(
             Defaults to ``datetime.now(UTC)``.
     """
     params = _build_sign_params(opts, timestamp)
-
-    # Add required headers (matches Go's addRequiredHeaders)
-    request.headers["host"] = request.url.host or ""
+    host = request.url.host or ""
+    if request.url.port and request.url.port not in (80, 443):
+        host = f"{host}:{request.url.port}"
+    request.headers["host"] = host
     request.headers["x-sdk-date"] = params.formatted_datetime
 
     _sign_with_params(request, params)
@@ -186,46 +221,7 @@ def re_sign_request(
     _sign_with_params(request, params)
 
 
-# --- Internal: signing parameters ---
-
-
-@dataclass(frozen=True)
-class _SignParams:
-    """Resolved signing parameters.
-
-    Corresponds to Go SDK's ``reqSignParams``.
-    """
-
-    access_key: str
-    secret_key: str
-    region_name: str
-    service_name: str
-    sign_algorithm: str
-    enable_cache_sign_key: bool
-    signing_time: datetime
-
-    @property
-    def formatted_date(self) -> str:
-        return _format_date(self.signing_time)
-
-    @property
-    def formatted_datetime(self) -> str:
-        return _format_datetime(self.signing_time)
-
-    @property
-    def scope(self) -> str:
-        return (
-            f"{self.formatted_date}/"
-            f"{self.region_name}/"
-            f"{self.service_name}/"
-            f"sdk_request"
-        )
-
-    @property
-    def days_since_epoch(self) -> int:
-        """Number of days since Unix epoch for the signing time."""
-        ts = int(self.signing_time.timestamp())
-        return ts // 86400
+# === 3. CORE SIGNING FLOW ===
 
 
 def _build_sign_params(
@@ -246,10 +242,10 @@ def _build_sign_params(
 
     base_time = timestamp if timestamp is not None else datetime.now(UTC)
     signing_time = base_time - timedelta(seconds=opts.time_offset_seconds)
-
+    clean_secret = opts.secret_key.get_secret_value().strip()
     return _SignParams(
         access_key=opts.access_key.strip(),
-        secret_key=opts.secret_key.strip(),
+        secret_key=SecretStr(clean_secret),
         region_name=opts.region_name,
         service_name=opts.service_name,
         sign_algorithm=algorithm,
@@ -257,55 +253,38 @@ def _build_sign_params(
         signing_time=signing_time,
     )
 
-
-# --- Internal: signing core ---
-
-
 def _sign_with_params(
     request: httpx.Request,
     params: _SignParams,
 ) -> None:
     """Core signing logic shared by ``sign_request`` and ``re_sign_request``."""
-    algorithm = params.sign_algorithm
-
-    # Content hash
     content_sha256 = request.headers.get(
         _CONTENT_SHA256_HEADER,
         _hash_sha256(_read_body(request)),
     )
-
-    # Canonical request
     canonical = _canonical_request(request, content_sha256)
-
-    # String to sign
+    logger.debug("Canonical Request:\n%s", canonical)
     string_to_sign = "\n".join([
-        algorithm,
+        params.sign_algorithm,
         params.formatted_datetime,
         params.scope,
         _hash_sha256(canonical.encode()),
     ])
 
-    # Derive signing key (with optional caching)
     signing_key = _derive_signing_key(params)
 
-    # Compute signature
     signature = _compute_signature(
-        string_to_sign, signing_key, algorithm,
+        string_to_sign, signing_key, params.sign_algorithm,
     ).hex()
 
-    # Build Authorization header
     signed_headers = _signed_headers_string(request)
     credential = f"{params.access_key}/{params.scope}"
     request.headers["authorization"] = (
-        f"{algorithm} "
+        f"{params.sign_algorithm} "
         f"Credential={credential}, "
         f"SignedHeaders={signed_headers}, "
         f"Signature={signature}"
     )
-
-
-# --- Internal: key derivation with cache ---
-
 
 def _derive_signing_key(params: _SignParams) -> bytes:
     """Derive the signing key, optionally using cache.
@@ -314,14 +293,12 @@ def _derive_signing_key(params: _SignParams) -> bytes:
     When caching is enabled, the key is cached per
     (secret, region, service) and valid for one day.
     """
+    secret = params.secret_key.get_secret_value()
     if not params.enable_cache_sign_key:
         return _build_sign_key(params)
 
-    cache_key = "-".join([
-        params.secret_key,
-        params.region_name,
-        params.service_name,
-    ])
+    h_secret = _hash_sha256(secret.encode())
+    cache_key = f"{h_secret}-{params.region_name}-{params.service_name}"
 
     cached = _cache.get(cache_key)
     if cached is not None and cached.days_since_epoch == params.days_since_epoch:
@@ -334,7 +311,6 @@ def _derive_signing_key(params: _SignParams) -> bytes:
     ))
     return sign_key
 
-
 def _build_sign_key(params: _SignParams) -> bytes:
     """Build signing key from secret + scope components.
 
@@ -346,114 +322,26 @@ def _build_sign_key(params: _SignParams) -> bytes:
         kSigning = HMAC(kService, "sdk_request")
     """
     algorithm = params.sign_algorithm
-    k_secret = f"SDK{params.secret_key}".encode()
+    k_secret = f"SDK{params.secret_key.get_secret_value()}".encode()
     k_date = _compute_signature(params.formatted_date, k_secret, algorithm)
     k_region = _compute_signature(params.region_name, k_date, algorithm)
     k_service = _compute_signature(params.service_name, k_region, algorithm)
     return _compute_signature("sdk_request", k_service, algorithm)
 
-
-# --- Internal: crypto primitives ---
-
-
-def _hash_sha256(data: bytes) -> str:
-    """Hex-encoded SHA-256 hash."""
-    return hashlib.sha256(data).hexdigest()
-
-
-def _hmac_sha256(data: str, key: bytes) -> bytes:
-    """HMAC-SHA256 of string data with byte key."""
-    return hmac.new(key, data.encode(), hashlib.sha256).digest()
-
-
-def _compute_signature(data: str, key: bytes, algorithm: str) -> bytes:
-    """Compute signature with the specified algorithm.
-
-    Corresponds to Go SDK's ``computeSignature``.
-
-    Raises:
-        ValueError: If the algorithm is not supported.
-    """
-    if algorithm == SIGN_ALGORITHM_HMAC_SHA256:
-        return _hmac_sha256(data, key)
-    raise ValueError(
-        f"Unsupported algorithm '{algorithm}', "
-        f"supported: {sorted(_SUPPORTED_ALGORITHMS)}"
-    )
-
-
-# --- Internal: time formatting ---
-
-
-def _format_datetime(dt: datetime) -> str:
-    """Format timestamp as ``20060102T150405Z``."""
-    return dt.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
-
-
-def _format_date(dt: datetime) -> str:
-    """Format date as ``20060102``."""
-    return dt.astimezone(UTC).strftime("%Y%m%d")
-
-
-# --- Internal: canonical request building ---
-
-
-def _read_body(request: httpx.Request) -> bytes:
-    """Read the request body as bytes.
-
-    For POST with no body, uses the query string as content
-    (matches Go SDK's ``calculateContentHash``).
-    """
-    if _use_payload_for_query(request):
-        return str(request.url.params).encode()
-    body = request.content
-    if body is None:
-        return b""
-    return body
-
-
-def _use_payload_for_query(request: httpx.Request) -> bool:
-    """Check if query string should be used as payload.
-
-    Corresponds to Go SDK's ``usePayloadForQueryParameters``.
-    """
-    if request.method.upper() != "POST":
-        return False
-    body = request.content
-    return body is None or body == b""
-
-
-def _url_encode(value: str, *, is_path: bool = False) -> str:
-    """URL-encode a value, preserving ``/`` in paths.
-
-    Matches Go SDK's ``urlEncode`` which keeps ``A-Z a-z 0-9 . - _ ~``
-    unreserved, and additionally ``/`` for path segments.
-    """
-    safe = "/-_.~" if is_path else "-_.~"
-    return quote(value, safe=safe)
-
+# === 4. CANONICALIZATION ===
 
 def _canonical_path(request: httpx.Request) -> str:
     """Build the canonical URI path.
-
-    Corresponds to Go SDK's ``getCanonicalizedResourcePath``.
     Uses the decoded path and re-encodes it to avoid double encoding.
     """
     path = request.url.path
     if not path.startswith("/"):
         path = "/" + path
-    if not path.endswith("/"):
-        path = path + "/"
     path = _url_encode(path, is_path=True)
-    if not path:
-        path = "/"
-    return path
-
+    return path or "/"
 
 def _canonical_query(request: httpx.Request) -> str:
     """Build the canonical query string.
-
-    Corresponds to Go SDK's ``getCanonicalizedQueryString``.
     Parameters are sorted by encoded key (case-insensitive).
     Duplicate keys are preserved.
     """
@@ -465,37 +353,39 @@ def _canonical_query(request: httpx.Request) -> str:
         return ""
 
     encoded = [(_url_encode(k), _url_encode(v)) for k, v in pairs]
-    encoded.sort(key=lambda p: p[0].lower())
+    encoded.sort(key=lambda p: (p[0].lower(), p[1]))
 
     return "&".join(f"{k}={v}" for k, v in encoded)
 
+def _get_signable_headers(request: httpx.Request) -> dict[str, str]:
+    result = {}
+    for key, value in request.headers.items():
+        k = key.lower()
+        if k in _SIGNED_HEADERS_WHITELIST or k.startswith("x-sdk-"):
+            result[k] = value
+    return result
 
 def _canonical_headers(request: httpx.Request) -> str:
     """Build canonical header string.
-
-    Corresponds to Go SDK's ``getCanonicalizedHeaderString``.
     Headers are lowercased, sorted, and whitespace-collapsed.
     """
-    headers = []
-    for key in sorted(request.headers.keys(), key=str.lower):
-        name = _SPACE_RE.sub(" ", key.lower().strip())
-        value = _SPACE_RE.sub(" ", request.headers[key].strip())
-        headers.append(f"{name}:{value}\n")
-    return "".join(headers)
+    headers = _get_signable_headers(request)
 
+    lines = []
+    for key in sorted(headers.keys()):
+        name = _SPACE_RE.sub(" ", key.strip())
+        value = _SPACE_RE.sub(" ", headers[key].strip())
+        lines.append(f"{name}:{value}\n")
+    return "".join(lines)
 
 def _signed_headers_string(request: httpx.Request) -> str:
     """Build the semicolon-separated signed headers list.
-
-    Corresponds to Go SDK's ``getSignedHeadersString``.
     """
-    return ";".join(sorted(request.headers.keys(), key=str.lower))
-
+    headers = _get_signable_headers(request)
+    return ";".join(sorted(headers.keys()))
 
 def _canonical_request(request: httpx.Request, content_sha256: str) -> str:
     """Assemble the full canonical request string.
-
-    Corresponds to Go SDK's ``createCanonicalRequest``.
 
     Format::
 
@@ -514,3 +404,67 @@ def _canonical_request(request: httpx.Request, content_sha256: str) -> str:
         _signed_headers_string(request),
         content_sha256,
     ])
+
+# === 5. UTILS ===
+
+def _hash_sha256(data: bytes) -> str:
+    """Hex-encoded SHA-256 hash."""
+    return hashlib.sha256(data).hexdigest()
+
+def _hmac_sha256(data: str, key: bytes) -> bytes:
+    """HMAC-SHA256 of string data with byte key."""
+    return hmac.new(key, data.encode(), hashlib.sha256).digest()
+
+def _compute_signature(data: str, key: bytes, algorithm: str) -> bytes:
+    """Compute signature with the specified algorithm.
+
+    Corresponds to Go SDK's ``computeSignature``.
+
+    Raises:
+        ValueError: If the algorithm is not supported.
+    """
+    if algorithm == SIGN_ALGORITHM_HMAC_SHA256:
+        return _hmac_sha256(data, key)
+    raise ValueError(
+        f"Unsupported algorithm '{algorithm}', "
+        f"supported: {sorted(_SUPPORTED_ALGORITHMS)}"
+    )
+
+def _format_datetime(dt: datetime) -> str:
+    """Format timestamp as ``20060102T150405Z``."""
+    return dt.astimezone(UTC).strftime("%Y%m%dT%H%M%SZ")
+
+def _format_date(dt: datetime) -> str:
+    """Format date as ``20060102``."""
+    return dt.astimezone(UTC).strftime("%Y%m%d")
+
+def _read_body(request: httpx.Request) -> bytes:
+    """Read the request body as bytes.
+
+    For POST with no body, uses the query string as content
+    (matches Go SDK's ``calculateContentHash``).
+    """
+    if _use_payload_for_query(request):
+        return str(request.url.params).encode()
+
+    try:
+        return request.content or b""
+    except httpx.RequestNotRead as e:
+        raise RuntimeError(
+            "Streaming bodies are not supported for AK/SK signing. "
+            "The request content must be fully loaded in memory."
+        ) from e
+
+def _use_payload_for_query(request: httpx.Request) -> bool:
+    """Check if query string should be used as payload.
+    """
+    if request.method.upper() != "POST":
+        return False
+    body = request.content
+    return body is None or body == b""
+
+def _url_encode(value: str, *, is_path: bool = False) -> str:
+    """URL-encode a value, preserving ``/`` in paths.
+    """
+    safe = "/-_.~" if is_path else "-_.~"
+    return quote(value, safe=safe)

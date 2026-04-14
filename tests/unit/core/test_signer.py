@@ -85,7 +85,7 @@ class TestCanonicalPath:
     def test_simple_path(self):
         req = httpx.Request("GET", "https://example.com/v2/zones")
         path = _canonical_path(req)
-        assert path == "/v2/zones/"
+        assert path == "/v2/zones"
 
     def test_root_path(self):
         req = httpx.Request("GET", "https://example.com/")
