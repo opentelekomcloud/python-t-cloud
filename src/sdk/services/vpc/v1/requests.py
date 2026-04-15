@@ -70,7 +70,7 @@ def get(client: ServiceClient, vpc_id: str) -> Vpc:
 def list(
     client: ServiceClient,
     opts: ListVpcsOpts | None = None,
-) -> Generator[Vpc]:
+) -> Iterator[Vpc]:
     """List VPCs with auto-pagination.
 
     ``GET /v1/{project_id}/vpcs``
@@ -86,17 +86,18 @@ def list(
         VPC resources.
     """
     params = opts.to_query_params() if opts else None
-    limit = opts.limit if opts and opts.limit else 0
+    limit = opts.limit if (opts and opts.limit is not None
+                           and opts.limit > 0) else 0
 
-    for item in marker_paginate(
+    return marker_paginate(
         client=client,
         path=base_url(client),
         items_key="vpcs",
+        model=Vpc,
         marker_key="id",
         limit=limit,
         params=params,
-    ):
-        yield Vpc.model_validate(item)
+    )
 
 
 def update(
