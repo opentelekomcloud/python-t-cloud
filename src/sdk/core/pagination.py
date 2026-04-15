@@ -1,7 +1,5 @@
 """Pagination strategies for list operations.
 
-Replaces the Go SDK's ``pagination`` package (Pager, LinkedPageBase,
-MarkerPageBase, OffsetPageBase, SinglePageBase) with Python generators.
 Each strategy is a generator function that yields items one by one,
 automatically fetching the next page when needed.
 
@@ -31,30 +29,32 @@ Example::
 """
 
 from __future__ import annotations
-
+from pydantic import BaseModel
+from typing import TypeVar
 from collections.abc import Generator
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, urljoin
 
 from sdk.core.service_client import ServiceClient
 
+T = TypeVar("T", bound=BaseModel)
+PaginatedItem = T | dict[str, Any]
 
 def marker_paginate(
     client: ServiceClient,
     path: str,
     *,
     items_key: str,
+    model: type[T] | None = None,
     marker_key: str = "id",
     limit: int = 0,
     params: dict[str, str] | None = None,
-) -> Generator[dict[str, Any]]:
+) -> Generator[PaginatedItem, None, None]:
     """Paginate using marker-based strategy.
 
     Fetches pages by setting ``marker`` query param to the last
     item's ``marker_key`` value. Stops when a page returns
     fewer items than ``limit`` or an empty list.
-
-    This mirrors Go SDK's ``MarkerPageBase`` behavior.
 
     Args:
         client: Service client to send requests through.
@@ -63,58 +63,53 @@ def marker_paginate(
             (e.g. ``"servers"``, ``"items"``).
         marker_key: Field name on each item used as the marker.
             Default: ``"id"``.
+        model: Optional Pydantic model class. If provided, raw JSON
+            items will be validated and parsed into instances of this
+            class. If omitted, raw dicts are returned.
         limit: Page size. If 0, the server default is used.
         params: Additional query parameters.
 
     Yields:
-        Individual resource dicts, one at a time.
+        Parsed Pydantic model instances (if ``model`` is provided),
+        otherwise raw resource dicts.
     """
     query: dict[str, str] = dict(params) if params else {}
-    # NOTE: When limit=0 (server default page size), the only exit
-    # condition is an empty marker. In tests with mocks that always
-    # return data, this will cause an infinite loop — always pass
-    # an explicit limit in test scenarios.
     if limit:
         query["limit"] = str(limit)
 
     while True:
         url = _build_url(path, query)
-        resp = client.get(url)
-        data = resp.json()
-
-        items = data.get(items_key, [])
+        _, items = _fetch_page(client, url, items_key)
         if not items:
             return
 
-        yield from items
+        for item in items:
+            yield model.model_validate(item) if model else item
 
-        # If server returned fewer than limit, we're on the last page
         if limit and len(items) < limit:
             return
-
-        # Set marker to last item's key
         last = items[-1]
-        marker = last.get(marker_key, "")
-        if not marker:
+        raw_marker = last.get(marker_key)
+
+        if raw_marker is None or raw_marker == "":
             return
 
-        # Circuit breaker: if API returns the same marker twice,
-        # we're stuck in a loop — bail out instead of spinning.
-        if query.get("marker") == str(marker):
+        marker_str = str(raw_marker)
+        if query.get("marker") == marker_str:
             return
 
-        query["marker"] = str(marker)
-
+        query["marker"] = marker_str
 
 def offset_paginate(
     client: ServiceClient,
     path: str,
     *,
     items_key: str,
+    model: type[T] | None = None,
     limit: int,
     start_offset: int = 0,
     params: dict[str, str] | None = None,
-) -> Generator[dict[str, Any]]:
+) -> Generator[PaginatedItem, None, None]:
     """Paginate using offset-based strategy.
 
     Increments ``offset`` by ``limit`` on each page. Stops when
@@ -126,13 +121,19 @@ def offset_paginate(
         client: Service client to send requests through.
         path: Relative resource path.
         items_key: JSON key containing the items list.
+        model: Optional Pydantic model class. If provided, raw JSON
+            items will be validated and parsed into instances of this
+            class. If omitted, raw dicts are returned.
         limit: Page size (required for offset pagination).
         start_offset: Starting offset. Default: 0.
         params: Additional query parameters.
 
     Yields:
-        Individual resource dicts.
+        Parsed Pydantic model instances (if ``model`` is provided),
+        otherwise raw resource dicts.
     """
+    if limit <= 0:
+        raise ValueError("Limit must be strictly positive for offset pagination.")
     query: dict[str, str] = dict(params) if params else {}
     query["limit"] = str(limit)
     offset = start_offset
@@ -140,14 +141,13 @@ def offset_paginate(
     while True:
         query["offset"] = str(offset)
         url = _build_url(path, query)
-        resp = client.get(url)
-        data = resp.json()
+        _, items = _fetch_page(client, url, items_key)
 
-        items = data.get(items_key, [])
         if not items:
             return
 
-        yield from items
+        for item in items:
+            yield model.model_validate(item) if model else item
 
         if len(items) < limit:
             return
@@ -160,9 +160,10 @@ def linked_paginate(
     path: str,
     *,
     items_key: str,
+    model: type[T] | None = None,
     link_path: list[str] | None = None,
     params: dict[str, str] | None = None,
-) -> Generator[dict[str, Any]]:
+) -> Generator[PaginatedItem, None, None]:
     """Paginate using linked (next URL) strategy.
 
     Follows a ``next`` link embedded in the response body.
@@ -175,30 +176,40 @@ def linked_paginate(
         client: Service client to send requests through.
         path: Relative resource path for the first page.
         items_key: JSON key containing the items list.
+        model: Optional Pydantic model class. If provided, raw JSON
+            items will be validated and parsed into instances of this
+            class. If omitted, raw dicts are returned.
         link_path: List of keys to traverse in the response
             to find the next page URL. Default: ``["links", "next"]``.
         params: Additional query parameters for the first request.
 
     Yields:
-        Individual resource dicts.
+        Parsed Pydantic model instances (if ``model`` is provided),
+        otherwise raw resource dicts.
     """
     if link_path is None:
         link_path = ["links", "next"]
 
     url = _build_url(path, params) if params else path
+    seen_urls: set[str] = set()
 
     while url:
-        resp = client.get(url)
-        data = resp.json()
+        if url in seen_urls:
+            break
+        seen_urls.add(url)
 
-        items = data.get(items_key, [])
+        data, items = _fetch_page(client, url, items_key)
+
         if not items:
             return
 
-        yield from items
+        for item in items:
+            yield model.model_validate(item) if model else item
 
-        # Traverse link_path to find next URL
-        url = _extract_link(data, link_path)
+        next_url = _extract_link(data, link_path)
+        if not next_url:
+            return
+        url = urljoin(url, next_url)
 
 
 def single_page(
@@ -206,8 +217,9 @@ def single_page(
     path: str,
     *,
     items_key: str,
+    model: type[T] | None = None,
     params: dict[str, str] | None = None,
-) -> list[dict[str, Any]]:
+) -> list[PaginatedItem]:
     """Fetch a single (non-paginated) list response.
 
     Convenience wrapper for endpoints that return all items
@@ -219,15 +231,21 @@ def single_page(
         client: Service client to send requests through.
         path: Relative resource path.
         items_key: JSON key containing the items list.
+        model: Optional Pydantic model class. If provided, raw JSON
+            items will be validated and parsed into instances of this
+            class. If omitted, raw dicts are returned.
         params: Additional query parameters.
 
     Returns:
-        List of resource dicts.
+        Parsed Pydantic model instances (if ``model`` is provided),
+        otherwise raw resource dicts.
     """
     url = _build_url(path, params) if params else path
-    resp = client.get(url)
-    data = resp.json()
-    return data.get(items_key, [])
+    _, items = _fetch_page(client, url, items_key)
+
+    if model:
+        return [model.model_validate(item) for item in items]
+    return items
 
 
 # ======================================================================
@@ -253,7 +271,6 @@ def _build_url(path: str, params: dict[str, str] | None) -> str:
 
     parsed = urlparse(path)
     existing = parse_qs(parsed.query, keep_blank_values=True)
-    # Flatten single-value lists from parse_qs
     merged = {k: v[0] if len(v) == 1 else v for k, v in existing.items()}
     merged.update(params)
 
@@ -271,6 +288,9 @@ def _extract_link(data: dict[str, Any], path: list[str]) -> str:
     Returns:
         URL string, or empty string if not found.
     """
+    if not path:
+        return ""
+
     current: Any = data
     for key in path:
         if not isinstance(current, dict):
@@ -278,7 +298,19 @@ def _extract_link(data: dict[str, Any], path: list[str]) -> str:
         current = current.get(key)
         if current is None:
             return ""
-    if current is data:
-        # Empty path — no traversal happened
-        return ""
     return str(current) if current else ""
+
+
+def _fetch_page(
+    client: ServiceClient,
+    url: str,
+    items_key: str
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fetch a page, parse JSON, and strictly validate the items key."""
+    resp = client.get(url)
+    data = resp.json()
+
+    if items_key not in data:
+        raise ValueError(f"Expected key '{items_key}' not found in API response")
+
+    return data, data[items_key]

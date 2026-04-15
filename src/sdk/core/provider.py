@@ -1,8 +1,7 @@
 """Provider client — central HTTP client for the SDK.
 
-Mirrors the Go SDK's ``ProviderClient`` + ``openstack/client.go``
-authentication flows. Combines HTTP transport (via ``httpx``),
-credential management, and retry logic into a single client.
+Combines HTTP transport (via ``httpx``), credential management,
+and retry logic into a single client.
 
 The ``authenticate()`` method dispatches to the correct auth flow
 based on ``AuthConfig.auth_mode`` and presence of agency fields:
@@ -39,18 +38,18 @@ from __future__ import annotations
 import logging
 import re
 import time
-from collections.abc import Callable
 from typing import Any
 
 import httpx
 
 from sdk.core.auth import AuthConfig, AuthMode
-from sdk.core.endpoint import EndpointLocator, build_endpoint_locator
+from sdk.core.endpoint import (EndpointLocator,
+                               build_endpoint_locator,
+                               CatalogEntry)
 from sdk.core.exceptions import (
-    HttpError,
     ReauthError,
     UnauthorizedError,
-    raise_for_status,
+    raise_for_status
 )
 from sdk.core.signer import SignOptions, sign_request
 
@@ -59,7 +58,6 @@ logger = logging.getLogger(__name__)
 USER_AGENT = "python-t-cloud/0.1.0"
 """Default User-Agent header value."""
 
-# Matches Go SDK's defaultOkCodes exactly.
 _DEFAULT_OK_CODES: dict[str, list[int]] = {
     "GET": [200],
     "POST": [200, 201, 202],
@@ -92,14 +90,11 @@ class ProviderClient:
     the IAM service catalog. All service clients reference a single
     ``ProviderClient`` instance.
 
-    Corresponds to Go SDK's ``ProviderClient`` struct.
-
     .. note::
 
-        This implementation is not thread-safe. The Go SDK uses
-        ``sync.RWMutex`` (``UseTokenLock``) for concurrent token
-        access. If thread safety is needed, add external
-        synchronisation around ``authenticate()`` and ``request()``.
+        This implementation is not thread-safe. If thread safety is needed,
+        add external synchronization around ``authenticate()`` and
+        ``request()``.
 
     Args:
         auth_config: Authentication configuration.
@@ -132,17 +127,13 @@ class ProviderClient:
             timeout=httpx.Timeout(30.0),
         )
 
-        # Auth state — populated by authenticate()
         self.token_id: str = ""
         self.project_id: str = ""
         self.user_id: str = ""
         self.domain_id: str = ""
         self.region_id: str = auth_config.region or ""
-
         self.endpoint_locator: EndpointLocator | None = None
-        self._reauth_func: Callable[[], None] | None = None
 
-        # Retry config
         self.max_backoff_retries = max_backoff_retries
         self.backoff_timeout = backoff_timeout
 
@@ -187,17 +178,21 @@ class ProviderClient:
             else:
                 self._v3_auth()
         else:
-            # AKSK
             if has_agency:
                 self._aksk_auth_with_agency()
             else:
                 self._aksk_auth()
+        if self.endpoint_locator is None:
+            raise RuntimeError(
+                "Endpoint locator not initialized after authentication"
+            )
 
     def request(
         self,
         method: str,
         url: str,
         *,
+        service_name: str = "",
         json: Any | None = None,
         content: bytes | None = None,
         headers: dict[str, str] | None = None,
@@ -213,11 +208,10 @@ class ProviderClient:
         - 429 → backoff retry (up to ``max_backoff_retries``)
         - 502/504 → gateway retry (up to ``retry_count``)
 
-        Corresponds to Go SDK's ``ProviderClient.Request``.
-
         Args:
             method: HTTP method (GET, POST, etc.).
             url: Full request URL.
+            service_name: Service name.
             json: JSON-serializable body.
             content: Raw bytes body (mutually exclusive with ``json``).
             headers: Additional request headers.
@@ -238,18 +232,17 @@ class ProviderClient:
         if retry_timeout is None:
             retry_timeout = _DEFAULT_RETRY_TIMEOUT
 
-        backoff_remaining = self.max_backoff_retries
-
         return self._do_request(
             method=method,
             url=url,
+            service_name=service_name,
             json=json,
             content=content,
             headers=headers,
             ok_codes=ok_codes,
             retry_count=retry_count,
             retry_timeout=retry_timeout,
-            backoff_remaining=backoff_remaining,
+            backoff_remaining=self.max_backoff_retries,
             _is_retry=False,
         )
 
@@ -273,6 +266,7 @@ class ProviderClient:
         *,
         method: str,
         url: str,
+        service_name: str,
         json: Any | None,
         content: bytes | None,
         headers: dict[str, str] | None,
@@ -294,7 +288,7 @@ class ProviderClient:
                 headers=headers,
             )
 
-            self._apply_auth(req)
+            self._apply_auth(req, service_name=service_name)
 
             t0 = time.monotonic()
             resp = self._http.send(req)
@@ -310,19 +304,17 @@ class ProviderClient:
 
             body = resp.text
 
-            # 401 — reauth and retry once
             if (resp.status_code == 401
-                    and self._reauth_func is not None
+                    and self.auth_config.allow_reauth
                     and not reauthed):
                 logger.debug("Got 401, attempting re-authentication")
                 try:
-                    self._reauth_func()
+                    self.authenticate()
                 except Exception as exc:
                     raise ReauthError(original=exc) from exc
                 reauthed = True
                 continue
 
-            # 429 — backoff retry
             if resp.status_code == 429 and backoff_remaining > 0:
                 logger.warning(
                     "Rate limited (429), waiting %.1fs (%d retries left)",
@@ -333,7 +325,6 @@ class ProviderClient:
                 backoff_remaining -= 1
                 continue
 
-            # 502/504 — gateway retry
             if resp.status_code in (502, 504) and retry_count > 0:
                 logger.warning(
                     "Gateway error (%d), retrying in %.1fs (%d left)",
@@ -345,7 +336,6 @@ class ProviderClient:
                 retry_count -= 1
                 continue
 
-            # Non-retryable error
             raise_for_status(
                 resp.status_code,
                 method=method,
@@ -364,13 +354,12 @@ class ProviderClient:
         content: bytes | None,
         headers: dict[str, str] | None,
     ) -> httpx.Request:
-        """Build an httpx.Request with correct content type."""
-        req_headers: dict[str, str] = {
-            "Accept": "application/json",
-            "User-Agent": USER_AGENT,
-        }
+        """Build a httpx.Request with correct content type."""
+        req_headers = dict(self._http.headers)
+        req_headers["Accept"] = "application/json"
         if headers:
             req_headers.update(headers)
+        req_headers.setdefault("User-Agent", USER_AGENT)
 
         if json is not None:
             req_headers.setdefault("Content-Type", "application/json")
@@ -385,21 +374,21 @@ class ProviderClient:
             method, url, headers=req_headers,
         )
 
-    def _apply_auth(self, request: httpx.Request) -> str:
+    def _apply_auth(self, request: httpx.Request,
+                    service_name: str) -> None:
         """Apply auth headers to a request.
 
         Returns the pre-request token for reauth comparison
         (mirrors Go SDK's ``prereqtok`` pattern).
         """
-        prereq_token = self.token_id
-
         if self.auth_config.auth_mode == AuthMode.AKSK and self.auth_config.access_key:
-            # AK/SK — sign the request
             sign_request(
                 request,
                 SignOptions(
                     access_key=self.auth_config.access_key,
                     secret_key=_secret_value(self.auth_config.secret_key),
+                    region_name=self.region_id,
+                    service_name=service_name,
                 ),
             )
             # Set project/domain scope headers
@@ -414,8 +403,6 @@ class ProviderClient:
         elif self.token_id:
             request.headers["x-auth-token"] = self.token_id
 
-        return prereq_token
-
     # ------------------------------------------------------------------
     # Internal: Auth flows
     # ------------------------------------------------------------------
@@ -429,7 +416,6 @@ class ProviderClient:
         cfg = self.auth_config
 
         if cfg.token_id:
-            # Token reuse — validate by GET /v3/auth/tokens
             self.token_id = _secret_value(cfg.token_id)
             resp = self._iam_request(
                 "GET",
@@ -437,22 +423,15 @@ class ProviderClient:
                 headers={"x-subject-token": self.token_id},
             )
         else:
-            # Password auth — POST /v3/auth/tokens
             body = _build_v3_auth_body(cfg)
             resp = self._iam_request(
                 "POST",
                 self.identity_v3_endpoint + "auth/tokens",
                 json=body,
             )
-            # Token is in the X-Subject-Token header
             self.token_id = resp.headers.get("x-subject-token", "")
 
-        data = resp.json()
-        self._extract_auth_result(data)
-
-        # Reauth function
-        if cfg.allow_reauth:
-            self._reauth_func = self._v3_auth
+        self._extract_auth_result(resp.json())
 
     def _v3_auth_with_agency(self) -> None:
         """Keystone V3 auth + agency assume_role.
@@ -463,13 +442,11 @@ class ProviderClient:
         """
         cfg = self.auth_config
 
-        # Step 1: authenticate as the base user
         if not cfg.token_id:
             self._v3_auth()
         else:
             self.token_id = _secret_value(cfg.token_id)
 
-        # Step 2: assume_role with agency credentials
         body = _build_agency_auth_body(cfg)
         resp = self._iam_request(
             "POST",
@@ -478,11 +455,7 @@ class ProviderClient:
         )
         self.token_id = resp.headers.get("x-subject-token", "")
 
-        data = resp.json()
-        self._extract_auth_result(data)
-
-        if cfg.allow_reauth:
-            self._reauth_func = self._v3_auth_with_agency
+        self._extract_auth_result(resp.json())
 
     def _aksk_auth(self) -> None:
         """AK/SK authentication.
@@ -492,26 +465,16 @@ class ProviderClient:
         via ``GET /v3/auth/catalog``.
         """
         cfg = self.auth_config
-
-        # Resolve project_id from name if needed
-        if not cfg.project_id and cfg.project_name:
-            self.project_id = self._resolve_project_id(cfg.project_name)
-        else:
-            self.project_id = cfg.project_id or ""
-
-        # Resolve domain_id from name if needed
-        if not cfg.domain_id and cfg.domain_name:
-            self.domain_id = self._resolve_domain_id(cfg.domain_name)
-        else:
-            self.domain_id = cfg.domain_id or ""
-
+        self.project_id = self._resolve_project_id(
+            cfg.project_name) if not cfg.project_id and cfg.project_name \
+            else cfg.project_id or ""
+        self.domain_id = self._resolve_domain_id(
+            cfg.domain_name) if not cfg.domain_id and cfg.domain_name \
+            else cfg.domain_id or ""
         self.region_id = cfg.region or ""
 
-        # Fetch service catalog (requests are AK/SK-signed)
         catalog = self._fetch_catalog()
-        self.endpoint_locator = build_endpoint_locator(
-            catalog, self.region_id,
-        )
+        self.endpoint_locator = build_endpoint_locator(catalog, self.region_id)
 
     def _aksk_auth_with_agency(self) -> None:
         """AK/SK auth + agency assume_role.
@@ -521,8 +484,6 @@ class ProviderClient:
         subsequent requests use the token (not AK/SK).
         """
         cfg = self.auth_config
-
-        # Step 1: AK/SK auth (for catalog + signing)
         self._aksk_auth()
 
         if not self.domain_id:
@@ -532,7 +493,6 @@ class ProviderClient:
                 body="Agency auth requires domain_id or domain_name",
             )
 
-        # Step 2: assume_role → get token
         body = _build_agency_auth_body(cfg)
         resp = self._iam_request(
             "POST",
@@ -540,16 +500,7 @@ class ProviderClient:
             json=body,
         )
         self.token_id = resp.headers.get("x-subject-token", "")
-
-        data = resp.json()
-        self._extract_auth_result(data)
-
-        # After agency auth, clear AK/SK so requests use token
-        # (mirrors Go SDK: client.AKSKAuthOptions.AccessKey = "")
-        # We don't mutate auth_config; instead _apply_auth checks
-        # token_id first when AK is empty.
-
-        self._reauth_func = self._aksk_auth_with_agency
+        self._extract_auth_result(resp.json())
 
     # ------------------------------------------------------------------
     # Internal: IAM helpers
@@ -587,7 +538,7 @@ class ProviderClient:
             content=None,
             headers=headers,
         )
-        self._apply_auth(req)
+        self._apply_auth(req, service_name="iam")
 
         t0 = time.monotonic()
         resp = self._http.send(req)
@@ -632,22 +583,17 @@ class ProviderClient:
                 if domain:
                     self.domain_id = domain.get("id", "")
 
-        # Region from config or derive from project name
         if not self.region_id:
             cfg = self.auth_config
-            if cfg.region:
-                self.region_id = cfg.region
-            elif cfg.tenant_name:
-                self.region_id = cfg.tenant_name
+            self.region_id = cfg.region or cfg.tenant_name or ""
 
-        # Service catalog
         catalog = token_data.get("catalog", [])
         if catalog:
-            self.endpoint_locator = build_endpoint_locator(
-                catalog, self.region_id,
-            )
+            parsed_catalog = [CatalogEntry.model_validate(c) for c in catalog]
+            self.endpoint_locator = build_endpoint_locator(parsed_catalog,
+                                                           self.region_id)
 
-    def _fetch_catalog(self) -> list[dict[str, Any]]:
+    def _fetch_catalog(self) -> list[CatalogEntry]:
         """Fetch the service catalog via ``GET /v3/auth/catalog``.
 
         Used by AK/SK auth where the catalog is not embedded in
@@ -656,12 +602,10 @@ class ProviderClient:
         Returns:
             List of catalog entries.
         """
-        resp = self._iam_request(
-            "GET",
-            self.identity_v3_endpoint + "auth/catalog",
-        )
-        data = resp.json()
-        return data.get("catalog", [])
+        resp = self._iam_request("GET",
+                                 self.identity_v3_endpoint + "auth/catalog")
+        raw_catalog = resp.json().get("catalog", [])
+        return [CatalogEntry.model_validate(entry) for entry in raw_catalog]
 
     def _resolve_project_id(self, name: str) -> str:
         """Look up project ID by name via IAM API.
@@ -682,10 +626,7 @@ class ProviderClient:
         data = resp.json()
         projects = data.get("projects", [])
         if not projects:
-            from sdk.core.exceptions import EndpointNotFoundError
-            raise EndpointNotFoundError(
-                service="identity", region=name,
-            )
+            raise ValueError(f"Project with name '{name}' not found")
         return projects[0]["id"]
 
     def _resolve_domain_id(self, name: str) -> str:
@@ -697,19 +638,11 @@ class ProviderClient:
         Returns:
             Domain ID string, or empty string if not found.
         """
-        try:
-            resp = self._iam_request(
-                "GET",
-                self.identity_v3_endpoint + f"auth/domains?name={name}",
-            )
-            data = resp.json()
-            domains = data.get("domains", [])
-            if domains:
-                return domains[0]["id"]
-        except HttpError:
-            logger.debug("Could not resolve domain '%s'", name)
-        return ""
-
+        resp = self._iam_request("GET", self.identity_v3_endpoint + f"auth/domains?name={name}")
+        domains = resp.json().get("domains", [])
+        if not domains:
+            raise ValueError(f"Domain with name '{name}' not found")
+        return domains[0]["id"]
 
 # ======================================================================
 # Module-level helpers
@@ -776,7 +709,6 @@ def _build_v3_auth_body(cfg: AuthConfig) -> dict[str, Any]:
     auth: dict[str, Any] = {"identity": {}}
 
     if cfg.password:
-        # Password authentication
         user: dict[str, Any] = {"password": _secret_value(cfg.password)}
         if cfg.user_id:
             user["id"] = cfg.user_id
@@ -792,7 +724,6 @@ def _build_v3_auth_body(cfg: AuthConfig) -> dict[str, Any]:
         auth["identity"]["methods"] = ["password"]
         auth["identity"]["password"] = {"user": user}
 
-        # MFA TOTP
         if cfg.passcode:
             auth["identity"]["methods"].append("totp")
             totp_user: dict[str, str] = {
@@ -808,7 +739,6 @@ def _build_v3_auth_body(cfg: AuthConfig) -> dict[str, Any]:
         auth["identity"]["methods"] = ["token"]
         auth["identity"]["token"] = {"id": _secret_value(cfg.token_id)}
 
-    # Scope
     scope = _build_scope(cfg)
     if scope:
         auth["scope"] = scope
@@ -818,8 +748,6 @@ def _build_v3_auth_body(cfg: AuthConfig) -> dict[str, Any]:
 
 def _build_agency_auth_body(cfg: AuthConfig) -> dict[str, Any]:
     """Build the JSON body for agency ``assume_role`` auth.
-
-    Corresponds to Go SDK's ``AgencyAuthOptions.ToTokenV3CreateMap``.
 
     Args:
         cfg: Auth configuration with agency fields populated.
@@ -837,7 +765,6 @@ def _build_agency_auth_body(cfg: AuthConfig) -> dict[str, Any]:
         },
     }
 
-    # Scope for delegated project
     if cfg.delegated_project and cfg.agency_domain_name:
         auth["scope"] = {
             "project": {
@@ -852,15 +779,12 @@ def _build_agency_auth_body(cfg: AuthConfig) -> dict[str, Any]:
 def _build_scope(cfg: AuthConfig) -> dict[str, Any] | None:
     """Build the ``scope`` section of a V3 auth request.
 
-    Corresponds to Go SDK's ``scopeInfo.BuildTokenV3ScopeMap``.
-
     Args:
         cfg: Auth configuration.
 
     Returns:
         Scope dict or None if no scoping fields are set.
     """
-    # Project scope (by ID or name)
     project_id = cfg.tenant_id or cfg.project_id
     project_name = cfg.tenant_name or cfg.project_name
 
@@ -878,7 +802,6 @@ def _build_scope(cfg: AuthConfig) -> dict[str, Any] | None:
             scope["project"]["domain"] = domain
         return scope
 
-    # Domain-only scope
     if cfg.domain_id:
         return {"domain": {"id": cfg.domain_id}}
     if cfg.domain_name:

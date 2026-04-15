@@ -471,15 +471,6 @@ class TestV3Auth:
         assert captured[0].method == "GET"
         assert client.token_id == "existing-tok"
 
-    def test_reauth_func_set_when_allowed(self) -> None:
-        cfg = _password_config(allow_reauth=True)
-        transport = httpx.MockTransport(lambda req: _token_response())
-        http_client = httpx.Client(transport=transport)
-
-        client = ProviderClient(cfg, http_client=http_client)
-        client.authenticate()
-
-        assert client._reauth_func is not None
 
     def test_auth_failure_raises(self) -> None:
         cfg = _password_config()
@@ -683,7 +674,11 @@ class TestRequestRetry:
         http_client = httpx.Client(transport=transport)
         client = ProviderClient(cfg, http_client=http_client)
         client.token_id = "old-token"
-        client._reauth_func = lambda: setattr(client, "token_id", "new-token")
+
+        def fake_authenticate() -> None:
+            client.token_id = "new-token"
+
+        client.authenticate = fake_authenticate
 
         resp = client.request("GET", "https://api.example.com/resource")
 
@@ -696,6 +691,7 @@ class TestRequestRetry:
             return httpx.Response(401, text="Unauthorized")
 
         cfg = _password_config()
+        cfg = cfg.model_copy(update={"allow_reauth": False})
         transport = httpx.MockTransport(handler)
         http_client = httpx.Client(transport=transport)
         client = ProviderClient(cfg, http_client=http_client)
@@ -717,7 +713,7 @@ class TestRequestRetry:
         def bad_reauth() -> None:
             raise RuntimeError("reauth failed")
 
-        client._reauth_func = bad_reauth
+        client.authenticate = bad_reauth
 
         with pytest.raises(ReauthError):
             client.request("GET", "https://api.example.com/resource")
