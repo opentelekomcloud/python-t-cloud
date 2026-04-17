@@ -13,8 +13,8 @@ from __future__ import annotations
 from sdk.core.service_client import ServiceClient
 
 
-def base_url(client: ServiceClient) -> str:
-    """Return the VPC collection URL: ``v1/{project_id}/vpcs``.
+def base_url() -> str:
+    """Return the VPC collection URL: ``vpcs``.
 
     Args:
         client: VPC service client.
@@ -22,12 +22,11 @@ def base_url(client: ServiceClient) -> str:
     Returns:
         Relative URL string.
     """
-    project_id = client.provider.project_id
-    return f"v1/{project_id}/vpcs"
+    return f"vpcs"
 
 
-def resource_url(client: ServiceClient, vpc_id: str) -> str:
-    """Return a single VPC resource URL: ``v1/{project_id}/vpcs/{vpc_id}``.
+def resource_url(vpc_id: str) -> str:
+    """Return a single VPC resource URL: ``vpcs/{vpc_id}``.
 
     Args:
         client: VPC service client.
@@ -36,4 +35,4 @@ def resource_url(client: ServiceClient, vpc_id: str) -> str:
     Returns:
         Relative URL string.
     """
-    return f"{base_url(client)}/{vpc_id}"
+    return f"vpcs/{vpc_id}"

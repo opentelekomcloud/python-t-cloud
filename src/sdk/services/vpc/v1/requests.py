@@ -24,7 +24,7 @@ Usage::
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
 
 from sdk.core.pagination import marker_paginate
 from sdk.core.service_client import ServiceClient
@@ -45,7 +45,7 @@ def create(client: ServiceClient, opts: CreateVpcOpts) -> Vpc:
     Returns:
         Created VPC resource.
     """
-    url = base_url(client)
+    url = base_url()
     resp = client.post(url, json=opts.to_request_body())
     return Vpc.model_validate(resp.json()["vpc"])
 
@@ -62,7 +62,7 @@ def get(client: ServiceClient, vpc_id: str) -> Vpc:
     Returns:
         VPC resource.
     """
-    url = resource_url(client, vpc_id)
+    url = resource_url(vpc_id)
     resp = client.get(url)
     return Vpc.model_validate(resp.json()["vpc"])
 
@@ -91,7 +91,7 @@ def list(
 
     return marker_paginate(
         client=client,
-        path=base_url(client),
+        path=base_url(),
         items_key="vpcs",
         model=Vpc,
         marker_key="id",
@@ -117,7 +117,7 @@ def update(
     Returns:
         Updated VPC resource.
     """
-    url = resource_url(client, vpc_id)
+    url = resource_url(vpc_id)
     resp = client.put(url, json=opts.to_request_body())
     return Vpc.model_validate(resp.json()["vpc"])
 
@@ -131,5 +131,5 @@ def delete(client: ServiceClient, vpc_id: str) -> None:
         client: VPC service client.
         vpc_id: VPC UUID.
     """
-    url = resource_url(client, vpc_id)
+    url = resource_url(vpc_id)
     client.delete(url)

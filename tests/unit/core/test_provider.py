@@ -336,7 +336,7 @@ class TestBuildScope:
 
 
 class TestEndpointLocator:
-    """Test ``build_endpoint_locator`` (integration with provider)."""
+    """Test ``build_endpoint_locator`` (acceptance with provider)."""
 
     def test_finds_public_endpoint(self) -> None:
         from sdk.core.endpoint import EndpointOpts
