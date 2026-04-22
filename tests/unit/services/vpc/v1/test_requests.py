@@ -67,7 +67,7 @@ class TestCreate:
         result = vpc.create(client, opts)
 
         client.post.assert_called_once_with(
-            f"v1/{PROJECT_ID}/vpcs",
+            f"vpcs",
             json={"vpc": {"name": "vpc", "cidr": "192.168.0.0/16"}},
         )
         assert result.id == "99d9d709-8478-4b46-9f3f-2206b1023fd3"
@@ -102,7 +102,7 @@ class TestGet:
         result = vpc.get(client, vpc_id)
 
         client.get.assert_called_once_with(
-            f"v1/{PROJECT_ID}/vpcs/{vpc_id}",
+            f"vpcs/{vpc_id}",
         )
         assert result.id == vpc_id
         assert result.cidr == "192.168.0.0/16"
@@ -141,7 +141,7 @@ class TestList:
         list(vpc.list(client, opts))
 
         call_url = client.get.call_args[0][0]
-        assert f"v1/{PROJECT_ID}/vpcs" in call_url
+        assert f"vpcs" in call_url
 
     def test_list_pagination(self):
         """List follows marker pagination across two pages."""
@@ -195,7 +195,7 @@ class TestUpdate:
         result = vpc.update(client, vpc_id, opts)
 
         client.put.assert_called_once_with(
-            f"v1/{PROJECT_ID}/vpcs/{vpc_id}",
+            f"vpcs/{vpc_id}",
             json={"vpc": {"name": "vpc1", "description": "test1"}},
         )
         assert result.name == "vpc1"
@@ -233,7 +233,7 @@ class TestDelete:
         vpc.delete(client, vpc_id)
 
         client.delete.assert_called_once_with(
-            f"v1/{PROJECT_ID}/vpcs/{vpc_id}",
+            f"vpcs/{vpc_id}",
         )
 
     def test_delete_returns_none(self):
