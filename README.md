@@ -19,7 +19,7 @@ Requires [uv](https://docs.astral.sh/uv/) and Python 3.11+.
 uv sync --group dev       # install with dev dependencies
 uv run ruff check src/    # lint
 uv run mypy src/          # type check
-uv run pytest -v          # test
+uv run pytest -v          # test core
 ```
 
 ## License

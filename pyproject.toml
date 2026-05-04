@@ -18,6 +18,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=9.0.2,<10",
+    "pytest-mock>=3.14",
     "pytest-httpx>=0.36",
     "ruff>=0.15.2",
     "mypy>=1.19",
@@ -49,3 +50,4 @@ log_cli = true
 log_cli_level = "INFO"
 log_cli_format = "%(asctime)s [%(levelname)s] %(message)s"
 log_cli_date_format = "%H:%M:%S"
+addopts = "--import-mode=importlib --ignore=tests/acceptance"
