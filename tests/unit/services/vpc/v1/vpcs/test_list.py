@@ -63,7 +63,7 @@ def test_list_with_positive_limit_forwards_it(mocker, mock_client):
 
     kwargs = paginate.call_args.kwargs
     assert kwargs["limit"] == 50
-    # And it appears in params too — that's correct per the OTC API.
+    # And it appears in params too — that's correct per the T Cloud Public API.
     assert kwargs["params"] == {"limit": "50"}
 
 

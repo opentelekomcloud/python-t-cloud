@@ -14,5 +14,5 @@ def pytest_collection_modifyitems(config, items):
 def pytest_configure(config):
     config.addinivalue_line(
         "markers",
-        "acceptance: marks tests that hit real OTC API (deselect with '-m \"not acceptance\"')",
+        "acceptance: marks tests that hit real T Cloud Public API (deselect with '-m \"not acceptance\"')",
     )

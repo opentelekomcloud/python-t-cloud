@@ -8,7 +8,7 @@ import pytest
 
 @pytest.fixture
 def vpc_payload():
-    """Minimal valid VPC payload as returned by the OTC API."""
+    """Minimal valid VPC payload as returned by the T Cloud Public API."""
     return {
         "id": "vpc-id-1",
         "name": "test-vpc",

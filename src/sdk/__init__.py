@@ -1,4 +1,4 @@
-"""OTC SDK — Python SDK for Open Telekom Cloud."""
+"""Python SDK for T Cloud Public."""
 
 from ._version import __version__
 
