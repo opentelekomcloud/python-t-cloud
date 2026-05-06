@@ -46,12 +46,6 @@ def provider() -> ProviderClient:
 
 
 @pytest.fixture
-def vpc_client(provider) -> ServiceClient:
-    """``ServiceClient`` configured for the VPC service."""
-    return ServiceClient(provider, service_type="vpc")
-
-
-@pytest.fixture
 def cleanup() -> Generator[Callable[..., None], None, None]:
     """LIFO cleanup registry backed by :class:`contextlib.ExitStack`.
 

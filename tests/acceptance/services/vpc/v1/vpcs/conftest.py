@@ -7,9 +7,20 @@ from collections.abc import Callable
 import pytest
 
 from sdk.core.exceptions import HttpError
+from sdk.core.service_client import ServiceClient
 from sdk.services.vpc.v1.vpcs import CreateVpcOpts, Vpc, create, delete
+from tests.acceptance.clients import make_service_client
 
 from tests.acceptance.conftest import unique_name
+
+
+@pytest.fixture
+def vpc_client(provider) -> ServiceClient:
+    """``ServiceClient`` for the VPC service.
+
+    Thin wrapper over :func:`tests.acceptance.clients.make_service_client`.
+    """
+    return make_service_client(provider, "vpc")
 
 
 def _safe_delete(client, vpc_id: str) -> None:
