@@ -20,7 +20,6 @@ import pytest
 
 from sdk.core.config import load_from_yaml
 from sdk.core.provider import ProviderClient
-from sdk.core.service_client import ServiceClient
 
 
 # Cloud name in clouds.yaml. Override to point tests at a different
