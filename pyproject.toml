@@ -1,0 +1,53 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "sdk"
+version = "0.1.0"
+description = "Python SDK for T Cloud Public"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.13"
+dependencies = [
+    "httpx>=0.28,<1",
+    "pydantic>=2.12,<3",
+    "pyyaml>=6.0.2,<7",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2,<10",
+    "pytest-mock>=3.14",
+    "pytest-httpx>=0.36",
+    "ruff>=0.15.2",
+    "mypy>=1.19",
+]
+
+docs = [
+    "sphinx>=8.0",
+    "sphinx-rtd-theme>=3.0",
+    "sphinx-autodoc-typehints>=2.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/sdk"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+log_cli = true
+log_cli_level = "INFO"
+log_cli_format = "%(asctime)s [%(levelname)s] %(message)s"
+log_cli_date_format = "%H:%M:%S"
+addopts = "--import-mode=importlib --ignore=tests/acceptance"
