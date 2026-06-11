@@ -30,9 +30,8 @@ Example::
 
 from __future__ import annotations
 from pydantic import BaseModel
-from typing import TypeVar
 from collections.abc import Generator
-from typing import Any, overload
+from typing import Any, overload, TypeVar
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, urljoin
 
 from sdk.core.exceptions import InvalidInputError

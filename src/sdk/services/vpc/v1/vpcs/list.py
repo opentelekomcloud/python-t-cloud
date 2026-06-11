@@ -32,6 +32,9 @@ def list(  # noqa: A001 - shadows builtin intentionally; matches Go SDK style
     fetching next pages automatically.
     """
     params = opts.to_query_params() if opts else None
+    if params:
+        params.pop("limit", None)
+        params.pop("marker", None)
     limit = opts.limit if (opts and opts.limit and opts.limit > 0) else 0
 
     return marker_paginate(

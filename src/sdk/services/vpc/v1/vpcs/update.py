@@ -7,17 +7,16 @@ from typing import ClassVar
 from sdk.core.opts import BaseOpts
 from sdk.core.service_client import ServiceClient
 
-from .common import _BASE_PATH, Route, Vpc
+from .common import _BASE_PATH, Route, Vpc, VpcBaseOpts
 
 
-class UpdateVpcOpts(BaseOpts):
+class UpdateVpcOpts(VpcBaseOpts):
     """Options for updating a VPC.
 
     All fields are optional. ``None`` means "do not touch", an explicit
     empty string clears the field on the server.
     """
 
-    _wrapper_key: ClassVar[str | None] = "vpc"
 
     name: str | None = None
     description: str | None = None
