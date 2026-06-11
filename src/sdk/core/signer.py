@@ -42,6 +42,8 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, ConfigDict, computed_field, SecretStr
 
+from sdk.core.exceptions import InvalidInputError
+
 logger = logging.getLogger(__name__)
 
 SIGN_ALGORITHM_HMAC_SHA256 = "SDK-HMAC-SHA256"
@@ -235,10 +237,7 @@ def _build_sign_params(
     """
     algorithm = opts.sign_algorithm or SIGN_ALGORITHM_HMAC_SHA256
     if algorithm not in _SUPPORTED_ALGORITHMS:
-        raise ValueError(
-            f"Unsupported signing algorithm '{algorithm}', "
-            f"supported: {sorted(_SUPPORTED_ALGORITHMS)}"
-        )
+        raise InvalidInputError("sign_algorithm", algorithm)
 
     base_time = timestamp if timestamp is not None else datetime.now(UTC)
     signing_time = base_time - timedelta(seconds=opts.time_offset_seconds)
@@ -425,10 +424,7 @@ def _compute_signature(data: str, key: bytes, algorithm: str) -> bytes:
     """
     if algorithm == SIGN_ALGORITHM_HMAC_SHA256:
         return _hmac_sha256(data, key)
-    raise ValueError(
-        f"Unsupported algorithm '{algorithm}', "
-        f"supported: {sorted(_SUPPORTED_ALGORITHMS)}"
-    )
+    raise InvalidInputError("algorithm", algorithm)
 
 def _format_datetime(dt: datetime) -> str:
     """Format timestamp as ``20060102T150405Z``."""
@@ -450,10 +446,8 @@ def _read_body(request: httpx.Request) -> bytes:
     try:
         return request.content or b""
     except httpx.RequestNotRead as e:
-        raise RuntimeError(
-            "Streaming bodies are not supported for AK/SK signing. "
-            "The request content must be fully loaded in memory."
-        ) from e
+        raise InvalidInputError(
+            "request.content", "<streaming body>") from e
 
 def _use_payload_for_query(request: httpx.Request) -> bool:
     """Check if query string should be used as payload.

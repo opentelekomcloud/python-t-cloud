@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import httpx
 import pytest
 
+from sdk.core.exceptions import InvalidInputError
 from sdk.core.signer import (
     SIGN_ALGORITHM_HMAC_SHA256,
     SignOptions,
@@ -308,7 +309,7 @@ class TestAlgorithmValidation:
             sign_algorithm="UNSUPPORTED-ALG",
         )
         req = httpx.Request("GET", "https://example.com/test")
-        with pytest.raises(ValueError, match="Unsupported"):
+        with pytest.raises(InvalidInputError):
             sign_request(req, opts)
 
     def test_default_algorithm(self):
