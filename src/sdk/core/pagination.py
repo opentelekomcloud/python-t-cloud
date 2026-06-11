@@ -35,6 +35,8 @@ from collections.abc import Generator
 from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, urljoin
 
+from sdk.core.exceptions import InvalidInputError
+from sdk.core.exceptions.response import MalformedResponseError
 from sdk.core.service_client import ServiceClient
 
 T = TypeVar("T", bound=BaseModel)
@@ -131,7 +133,7 @@ def offset_paginate(
         otherwise raw resource dicts.
     """
     if limit <= 0:
-        raise ValueError("Limit must be strictly positive for offset pagination.")
+        raise InvalidInputError("limit", limit)
     query: dict[str, str] = dict(params) if params else {}
     query["limit"] = str(limit)
     offset = start_offset
@@ -306,6 +308,6 @@ def _fetch_page(
     data = resp.json()
 
     if items_key not in data:
-        raise ValueError(f"Expected key '{items_key}' not found in API response")
-
+        raise MalformedResponseError(
+            f"expected key '{items_key}' not found in list response")
     return data, data[items_key]

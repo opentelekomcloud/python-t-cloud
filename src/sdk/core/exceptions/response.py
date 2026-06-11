@@ -63,6 +63,16 @@ class HttpError(SDKError):
             msg += f"\n{self.body}"
         return msg
 
+class MalformedResponseError(SDKError):
+    """API returned 2xx but the body doesn't match the expected shape.
+
+    Args:
+        detail: What exactly was wrong with the response.
+    """
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__(f"Malformed API response: {detail}")
 
 # --- Status-code specific errors ---
 

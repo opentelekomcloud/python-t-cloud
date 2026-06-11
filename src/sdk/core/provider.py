@@ -49,7 +49,7 @@ from sdk.core.endpoint import (EndpointLocator,
 from sdk.core.exceptions import (
     ReauthError,
     UnauthorizedError,
-    raise_for_status
+    raise_for_status, AuthError, ResourceNotFoundError
 )
 from sdk.core.signer import SignOptions, sign_request
 
@@ -183,9 +183,8 @@ class ProviderClient:
             else:
                 self._aksk_auth()
         if self.endpoint_locator is None:
-            raise RuntimeError(
-                "Endpoint locator not initialized after authentication"
-            )
+            raise AuthError(
+                "Endpoint locator not initialized after authentication")
 
     def request(
         self,
@@ -607,42 +606,33 @@ class ProviderClient:
         raw_catalog = resp.json().get("catalog", [])
         return [CatalogEntry.model_validate(entry) for entry in raw_catalog]
 
-    def _resolve_project_id(self, name: str) -> str:
-        """Look up project ID by name via IAM API.
-
-        Args:
-            name: Project name.
-
-        Returns:
-            Project ID string.
+    def _resolve_named_id(
+            self, *, resource: str, url_suffix: str, items_key: str, name: str
+    ) -> str:
+        """Look up a resource ID by name via the IAM API.
 
         Raises:
-            EndpointNotFoundError: If no project is found.
+            ResourceNotFoundError: If nothing matches ``name``.
         """
         resp = self._iam_request(
-            "GET",
-            self.identity_v3_endpoint + f"projects?name={name}",
+            "GET", self.identity_v3_endpoint + f"{url_suffix}?name={name}"
         )
-        data = resp.json()
-        projects = data.get("projects", [])
-        if not projects:
-            raise ValueError(f"Project with name '{name}' not found")
-        return projects[0]["id"]
+        items = resp.json().get(items_key, [])
+        if not items:
+            raise ResourceNotFoundError(resource, name)
+        return items[0]["id"]
+
+    def _resolve_project_id(self, name: str) -> str:
+        return self._resolve_named_id(
+            resource="Project", url_suffix="projects",
+            items_key="projects", name=name,
+        )
 
     def _resolve_domain_id(self, name: str) -> str:
-        """Look up domain ID by name via IAM API.
-
-        Args:
-            name: Domain name.
-
-        Returns:
-            Domain ID string, or empty string if not found.
-        """
-        resp = self._iam_request("GET", self.identity_v3_endpoint + f"auth/domains?name={name}")
-        domains = resp.json().get("domains", [])
-        if not domains:
-            raise ValueError(f"Domain with name '{name}' not found")
-        return domains[0]["id"]
+        return self._resolve_named_id(
+            resource="Domain", url_suffix="auth/domains",
+            items_key="domains", name=name,
+        )
 
 # ======================================================================
 # Module-level helpers
