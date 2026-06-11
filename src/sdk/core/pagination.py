@@ -53,8 +53,8 @@ def marker_paginate(
     """Paginate using marker-based strategy.
 
     Fetches pages by setting ``marker`` query param to the last
-    item's ``marker_key`` value. Stops when a page returns
-    fewer items than ``limit`` or an empty list.
+    item's ``marker_key`` value. Stops on an empty page, a missing/empty marker on the last item,
+    or a repeated marker.
 
     Args:
         client: Service client to send requests through.
@@ -86,8 +86,6 @@ def marker_paginate(
         for item in items:
             yield model.model_validate(item) if model else item
 
-        if limit and len(items) < limit:
-            return
         last = items[-1]
         raw_marker = last.get(marker_key)
 
@@ -95,8 +93,8 @@ def marker_paginate(
             return
 
         marker_str = str(raw_marker)
-        if query.get("marker") == marker_str:
-            return
+        # if query.get("marker") == marker_str:
+        #     return
 
         query["marker"] = marker_str
 
@@ -149,10 +147,7 @@ def offset_paginate(
         for item in items:
             yield model.model_validate(item) if model else item
 
-        if len(items) < limit:
-            return
-
-        offset += limit
+        offset += len(items)
 
 
 def linked_paginate(
