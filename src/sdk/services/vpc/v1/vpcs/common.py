@@ -3,8 +3,14 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+from typing import ClassVar
+from sdk.core.opts import BaseOpts
 
 _BASE_PATH = "vpcs"
+
+
+class VpcBaseOpts(BaseOpts):
+    _wrapper_key: ClassVar[str | None] = "vpc"
 
 
 class Route(BaseModel):

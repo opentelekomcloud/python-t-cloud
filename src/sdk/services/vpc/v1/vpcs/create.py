@@ -4,19 +4,16 @@ from __future__ import annotations
 
 from typing import ClassVar
 
-from sdk.core.opts import BaseOpts
 from sdk.core.service_client import ServiceClient
 
-from .common import _BASE_PATH, Vpc
+from .common import _BASE_PATH, Vpc, VpcBaseOpts
 
 
-class CreateVpcOpts(BaseOpts):
+class CreateVpcOpts(VpcBaseOpts):
     """Options for creating a VPC.
 
     All fields are optional per the API spec.
     """
-
-    _wrapper_key: ClassVar[str | None] = "vpc"
 
     name: str | None = None
     description: str | None = None
