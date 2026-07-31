@@ -10,6 +10,7 @@ from typing import Any
 import yaml
 
 from sdk.core.auth import AuthConfig, AuthMode
+from sdk.core.exceptions import InvalidInputError
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +31,11 @@ def load_from_yaml(cloud_name: str = "otc", file_path: str | Path | None = None)
         try:
             data = yaml.safe_load(f)
         except yaml.YAMLError as e:
-            raise ValueError(f"Failed to parse YAML file at {path_to_load}: {e}") from e
+            raise InvalidInputError("clouds.yaml", str(path_to_load)) from e
 
     clouds = data.get("clouds", {})
     if cloud_name not in clouds:
-        raise ValueError(f"Cloud '{cloud_name}' not found in {path_to_load}")
+        raise InvalidInputError("clouds.yaml", str(path_to_load))
 
     cloud_config = clouds[cloud_name]
     auth_data = cloud_config.get("auth", {})

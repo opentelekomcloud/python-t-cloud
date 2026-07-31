@@ -6,6 +6,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from sdk.core.exceptions import InvalidInputError
+
 
 class BaseOpts(BaseModel):
     """Base class for request body options.
@@ -50,10 +52,7 @@ class BaseQueryOpts(BaseModel):
             if value == "":
                 continue
             if isinstance(value, (dict, list)):
-                raise TypeError(
-                    f"Query param {key!r} has non-scalar value {value!r}; "
-                    "query strings only support scalar values."
-                )
+                raise InvalidInputError(key, value)
             if isinstance(value, bool):
                 params[key] = "true" if value else "false"
             else:

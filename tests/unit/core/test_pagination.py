@@ -107,7 +107,10 @@ class TestExtractLink:
 class TestMarkerPaginate:
     def test_single_page(self) -> None:
         """Single page with fewer items than limit."""
+
         def handler(req: httpx.Request) -> httpx.Response:
+            if "marker=" in str(req.url):
+                return httpx.Response(200, json={"servers": []})
             return httpx.Response(200, json={
                 "servers": [
                     {"id": "s1", "name": "a"},
@@ -133,16 +136,17 @@ class TestMarkerPaginate:
                 return httpx.Response(200, json={
                     "items": [{"id": "1"}, {"id": "2"}],
                 })
-            else:
+            elif "marker=2" in url:
                 return httpx.Response(200, json={
                     "items": [{"id": "3"}],
                 })
+            return httpx.Response(200, json={"items": []})
 
         sc = _make_service_client(handler)
         items = list(marker_paginate(sc, "items", items_key="items", limit=2))
 
         assert len(items) == 3
-        assert call_count == 2
+        assert call_count == 3
         assert items[-1]["id"] == "3"
 
     def test_empty_first_page(self) -> None:
@@ -226,6 +230,28 @@ class TestMarkerPaginate:
 
         assert "status=ACTIVE" in str(captured[0].url)
 
+    def test_server_caps_page_size(self) -> None:
+        """Server caps pages at 2 even though we asked limit=100 —
+        Go-parity pagination must traverse everything (stops on empty
+        page only), not at the first short page."""
+        ids = ["a", "b", "c", "d", "e"]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            url = str(req.url)
+            tail = ids
+            for i in ids:
+                if f"marker={i}" in url:
+                    tail = ids[ids.index(i) + 1:]
+                    break
+            return httpx.Response(200, json={
+                "items": [{"id": x} for x in tail[:2]],  # cap wins over limit
+            })
+
+        sc = _make_service_client(handler)
+        items = list(marker_paginate(sc, "items", items_key="items", limit=100))
+
+        assert [i["id"] for i in items] == ids
+
 
 # ======================================================================
 # offset_paginate
@@ -235,9 +261,11 @@ class TestMarkerPaginate:
 class TestOffsetPaginate:
     def test_single_page(self) -> None:
         def handler(req: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={
-                "topics": [{"id": "t1"}, {"id": "t2"}],
-            })
+            if "offset=0" in str(req.url):
+                return httpx.Response(200, json={
+                    "topics": [{"id": "t1"}, {"id": "t2"}],
+                })
+            return httpx.Response(200, json={"topics": []})
 
         sc = _make_service_client(handler)
         items = list(offset_paginate(
@@ -269,7 +297,7 @@ class TestOffsetPaginate:
         ))
 
         assert len(items) == 3
-        assert call_count == 2
+        assert call_count == 3
 
     def test_offset_increments(self) -> None:
         captured: list[httpx.Request] = []
@@ -320,6 +348,23 @@ class TestOffsetPaginate:
         ))
 
         assert items == []
+
+    def test_server_caps_page_size(self) -> None:
+        """Server caps pages below the requested limit — offset must
+        advance by the actual page size and not stop early."""
+        ids = ["a", "b", "c", "d", "e"]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            from urllib.parse import parse_qs, urlparse
+            offset = int(parse_qs(urlparse(str(req.url)).query)["offset"][0])
+            return httpx.Response(200, json={
+                "items": [{"id": x} for x in ids[offset:offset + 2]],
+            })
+
+        sc = _make_service_client(handler)
+        items = list(offset_paginate(sc, "items", items_key="items", limit=100))
+
+        assert [i["id"] for i in items] == ids
 
 
 # ======================================================================

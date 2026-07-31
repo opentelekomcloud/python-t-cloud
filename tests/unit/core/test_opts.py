@@ -7,6 +7,7 @@ from typing import ClassVar
 import pytest
 from pydantic import BaseModel, Field
 
+from sdk.core.exceptions import InvalidInputError
 from sdk.core.opts import BaseOpts, BaseQueryOpts
 
 
@@ -155,7 +156,7 @@ def test_query_params_rejects_list_value():
     class _BadQuery(BaseQueryOpts):
         tags: list[str] | None = None
 
-    with pytest.raises(TypeError, match="non-scalar"):
+    with pytest.raises(InvalidInputError):
         _BadQuery(tags=["a", "b"]).to_query_params()
 
 
@@ -163,5 +164,5 @@ def test_query_params_rejects_dict_value():
     class _BadQuery(BaseQueryOpts):
         meta: dict[str, str] | None = None
 
-    with pytest.raises(TypeError, match="non-scalar"):
+    with pytest.raises(InvalidInputError):
         _BadQuery(meta={"k": "v"}).to_query_params()

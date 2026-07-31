@@ -30,15 +30,40 @@ Example::
 
 from __future__ import annotations
 from pydantic import BaseModel
-from typing import TypeVar
 from collections.abc import Generator
-from typing import Any
+from typing import Any, overload, TypeVar
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse, urljoin
 
+from sdk.core.exceptions import InvalidInputError
+from sdk.core.exceptions.response import MalformedResponseError
 from sdk.core.service_client import ServiceClient
 
 T = TypeVar("T", bound=BaseModel)
-PaginatedItem = T | dict[str, Any]
+
+@overload
+def marker_paginate(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: type[T],
+    marker_key: str = ...,
+    limit: int = ...,
+    params: dict[str, str] | None = ...,
+) -> Generator[T, None, None]: ...
+
+
+@overload
+def marker_paginate(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: None = ...,
+    marker_key: str = ...,
+    limit: int = ...,
+    params: dict[str, str] | None = ...,
+) -> Generator[dict[str, Any], None, None]: ...
 
 def marker_paginate(
     client: ServiceClient,
@@ -49,12 +74,12 @@ def marker_paginate(
     marker_key: str = "id",
     limit: int = 0,
     params: dict[str, str] | None = None,
-) -> Generator[PaginatedItem, None, None]:
+) -> Generator[Any, None, None]:
     """Paginate using marker-based strategy.
 
     Fetches pages by setting ``marker`` query param to the last
-    item's ``marker_key`` value. Stops when a page returns
-    fewer items than ``limit`` or an empty list.
+    item's ``marker_key`` value. Stops on an empty page, a missing/empty marker on the last item,
+    or a repeated marker.
 
     Args:
         client: Service client to send requests through.
@@ -86,8 +111,6 @@ def marker_paginate(
         for item in items:
             yield model.model_validate(item) if model else item
 
-        if limit and len(items) < limit:
-            return
         last = items[-1]
         raw_marker = last.get(marker_key)
 
@@ -95,10 +118,35 @@ def marker_paginate(
             return
 
         marker_str = str(raw_marker)
-        if query.get("marker") == marker_str:
-            return
+        # if query.get("marker") == marker_str:
+        #     return
 
         query["marker"] = marker_str
+
+@overload
+def offset_paginate(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: type[T],
+    limit: int,
+    start_offset: int = ...,
+    params: dict[str, str] | None = ...,
+) -> Generator[T, None, None]: ...
+
+
+@overload
+def offset_paginate(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: None = ...,
+    limit: int,
+    start_offset: int = ...,
+    params: dict[str, str] | None = ...,
+) -> Generator[dict[str, Any], None, None]: ...
 
 def offset_paginate(
     client: ServiceClient,
@@ -109,7 +157,7 @@ def offset_paginate(
     limit: int,
     start_offset: int = 0,
     params: dict[str, str] | None = None,
-) -> Generator[PaginatedItem, None, None]:
+) -> Generator[Any, None, None]:
     """Paginate using offset-based strategy.
 
     Increments ``offset`` by ``limit`` on each page. Stops when
@@ -133,7 +181,7 @@ def offset_paginate(
         otherwise raw resource dicts.
     """
     if limit <= 0:
-        raise ValueError("Limit must be strictly positive for offset pagination.")
+        raise InvalidInputError("limit", limit)
     query: dict[str, str] = dict(params) if params else {}
     query["limit"] = str(limit)
     offset = start_offset
@@ -149,11 +197,30 @@ def offset_paginate(
         for item in items:
             yield model.model_validate(item) if model else item
 
-        if len(items) < limit:
-            return
+        offset += len(items)
 
-        offset += limit
+@overload
+def linked_paginate(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: type[T],
+    link_path: list[str] | None = ...,
+    params: dict[str, str] | None = ...,
+) -> Generator[T, None, None]: ...
 
+
+@overload
+def linked_paginate(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: None = ...,
+    link_path: list[str] | None = ...,
+    params: dict[str, str] | None = ...,
+) -> Generator[dict[str, Any], None, None]: ...
 
 def linked_paginate(
     client: ServiceClient,
@@ -163,7 +230,7 @@ def linked_paginate(
     model: type[T] | None = None,
     link_path: list[str] | None = None,
     params: dict[str, str] | None = None,
-) -> Generator[PaginatedItem, None, None]:
+) -> Generator[Any, None, None]:
     """Paginate using linked (next URL) strategy.
 
     Follows a ``next`` link embedded in the response body.
@@ -211,6 +278,26 @@ def linked_paginate(
             return
         url = urljoin(url, next_url)
 
+@overload
+def single_page(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: type[T],
+    params: dict[str, str] | None = ...,
+) -> list[T]: ...
+
+
+@overload
+def single_page(
+    client: ServiceClient,
+    path: str,
+    *,
+    items_key: str,
+    model: None = ...,
+    params: dict[str, str] | None = ...,
+) -> list[dict[str, Any]]: ...
 
 def single_page(
     client: ServiceClient,
@@ -219,7 +306,7 @@ def single_page(
     items_key: str,
     model: type[T] | None = None,
     params: dict[str, str] | None = None,
-) -> list[PaginatedItem]:
+) -> list[Any]:
     """Fetch a single (non-paginated) list response.
 
     Convenience wrapper for endpoints that return all items
@@ -311,6 +398,6 @@ def _fetch_page(
     data = resp.json()
 
     if items_key not in data:
-        raise ValueError(f"Expected key '{items_key}' not found in API response")
-
+        raise MalformedResponseError(
+            f"expected key '{items_key}' not found in list response")
     return data, data[items_key]
